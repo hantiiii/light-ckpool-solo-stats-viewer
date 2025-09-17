@@ -5,8 +5,8 @@
 
 A modern, fast, and secure PHP-based web interface for viewing ckpool statistics. It features a lightweight design, dynamic multi-series charts, automatic light/dark theme switching, and is built with performance and security in mind.
 
-![CKPool Stats Viewer Screenshot](https://i.imgur.com/k6wzS3L.png)
-*(Feel free to replace this image with your own screenshot!)*
+![CKPool Stats Viewer Screenshot](https://i.imgur.com/f8VzaNc.png)
+
 
 ---
 
