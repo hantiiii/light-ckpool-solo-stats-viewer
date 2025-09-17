@@ -15,6 +15,7 @@ A modern, fast, and secure PHP-based web interface for viewing ckpool statistics
 This project is a statistics viewer **for an existing, running instance of ckpool**. It does not include the mining pool software itself. You must have a functional `ckpool` installation.
 
 * **ckpool Source & Info:** [ckolivas/ckpool on Bitbucket](https://bitbucket.org/ckolivas/ckpool-solo/src/solobtc/)
+* **Live installation:** (https://88x.pl/btcnode/) and (https://88x.pl/btcnode/?btc_address=1HANfVCfy9CFp5JAjNBhKWPWbavjXxdCRR)
 
 ## ✨ Key Features
 
