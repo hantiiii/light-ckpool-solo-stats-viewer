@@ -1,0 +1,11 @@
+# Database files
+*.db
+*.db-journal
+
+# Data and state files
+stats.json
+parser.state
+
+# IDE configuration files
+.vscode/
+.idea/
