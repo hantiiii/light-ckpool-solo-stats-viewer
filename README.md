@@ -32,9 +32,9 @@ This project is a statistics viewer **for an existing, running instance of ckpoo
 
 1.  **Clone the Repository:**
     ```bash
-    git clone [https://github.com/TWOJA_NAZWA/ckpool-stats-viewer.git](https://github.com/TWOJA_NAZWA/ckpool-stats-viewer.git) /var/www/html/btcnode
+    git clone [https://github.com/hantiiii/light-ckpool-stats-viewer.git](https://github.com/hantiiii/light-ckpool-stats-viewer.git) /var/www/html/btcnode
     ```
-    *(Replace `TWOJA_NAZWA` with your GitHub username)*
+ 
 
 2.  **Configure NGINX:**
     Add a server block to your NGINX configuration to serve the application and secure the parser script.
