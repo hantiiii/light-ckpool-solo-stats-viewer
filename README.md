@@ -5,8 +5,16 @@
 
 A modern, fast, and secure PHP-based web interface for viewing ckpool statistics. It features a lightweight design, dynamic multi-series charts, automatic light/dark theme switching, and is built with performance and security in mind.
 
-![CKPool Stats Viewer Screenshot](https://i.imgur.com/k6wzS3L.png)
-*(Feel free to replace this image with your own screenshot!)*
+![CKPool Stats Viewer Screenshot](https://i.imgur.com/f8VzaNc.png)
+
+---
+
+## Live Demo
+
+A live version of this stats viewer is running at:
+
+* **Pool Overview:** [88x.pl/btcnode/](https://88x.pl/btcnode/)
+* **User Example:** [1HANfVC...](https://88x.pl/btcnode/?btc_address=1HANfVCfy9CFp5JAjNBhKWPWbavjXxdCRR)
 
 ---
 
@@ -28,70 +36,109 @@ This project is a statistics viewer **for an existing, running instance of ckpoo
 
 ---
 
-## 🚀 Installation
+## 🚀 Installation Guide
 
-1.  **Clone the Repository:**
-    ```bash
-    git clone [https://github.com/TWOJA_NAZWA/ckpool-stats-viewer.git](https://github.com/TWOJA_NAZWA/ckpool-stats-viewer.git) /var/www/html/btcnode
-    ```
-    *(Replace `TWOJA_NAZWA` with your GitHub username)*
+### 1. Clone the Repository
 
-2.  **Configure NGINX:**
-    Add a server block to your NGINX configuration to serve the application and secure the parser script.
-    ```nginx
-    server {
-        listen 443 ssl http2;
-        server_name your_domain.com;
-        root /var/www/html;
-        index index.php;
+Clone this repository into your desired web server directory.
 
-        # SSL config...
+```bash
+git clone https://github.com/hantiiii/light-ckpool-solo-stats-viewer.git /var/www/html/btcnode
+```
 
-        location /btcnode/ {
-            try_files $uri $uri/ /btcnode/index.php?$args;
-        }
+### 2. Configure NGINX
 
-        location = /btcnode/parser.php {
-            deny all;
-        }
+Add a server block to your NGINX configuration to serve the application and secure the parser script.
 
-        location ~ \.php$ {
-            include snippets/fastcgi-php.conf;
-            fastcgi_pass unix:/var/run/php/php8.2-fpm.sock; // Adjust to your PHP version
-        }
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name your_domain.com;
+    root /var/www/html;
+    index index.php;
+
+    # SSL configuration...
+
+    # Handle the application routing
+    location /btcnode/ {
+        try_files $uri $uri/ /btcnode/index.php?$args;
     }
-    ```
-    Then, test and restart NGINX: `sudo nginx -t && sudo systemctl restart nginx`
 
-3.  **Set Permissions:**
-    The parser script, run by `root`, will create and manage permissions for its data files. You just need to set the base directory ownership.
+    # Block public access to the parser script
+    location = /btcnode/parser.php {
+        deny all;
+    }
+
+    # Process PHP files
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        # Adjust to your PHP-FPM socket path
+        fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
+    }
+}
+```
+
+After saving, test and restart NGINX:
+
+```bash
+sudo nginx -t && sudo systemctl restart nginx
+```
+
+### 3. Set Permissions
+
+Set the ownership and permissions for the project directory. This ensures the web server can read files, but not modify the application code.
+
+```bash
+# Replace 'www-data' with your web server's group (e.g., 'client1')
+sudo chown -R root:www-data /var/www/html/btcnode
+
+# Set secure permissions: directories 755, files 644
+sudo find /var/www/html/btcnode -type d -exec chmod 755 {} \;
+sudo find /var/www/html/btcnode -type f -exec chmod 644 {} \;
+```
+
+The `parser.php` script, run by `root`, will automatically handle permissions for the data files it creates (`.db`, `.json`, `.state`).
+
+### 4. Configure the Parser
+
+Edit the configuration variables at the top of the `parser.php` file to match your environment.
+
+```php
+// in /var/www/html/btcnode/parser.php
+$logFilePath = '/var/log/ckpool/ckpool.log'; 
+$webUser     = 'www-data'; // e.g., 'web1'
+$webGroup    = 'www-data'; // e.g., 'client1'
+```
+
+### 5. Set Up the Cron Job
+
+The parser script needs to run periodically. A 5-minute interval is recommended.
+
+1.  Open the root crontab editor:
+
     ```bash
-    # Replace 'www-data' with your web server's group (e.g., 'client1')
-    sudo chown -R root:www-data /var/www/html/btcnode
-    sudo chmod -R 775 /var/www/html/btcnode
+    sudo crontab -e
     ```
 
-4.  **Configure the Parser:**
-    Edit the configuration variables at the top of the `parser.php` file:
-    ```php
-    // in /var/www/html/btcnode/parser.php
-    $logFilePath = '/var/log/ckpool/ckpool.log'; 
-    $webUser = 'www-data'; // e.g., 'web1'
-    $webGroup = 'www-data'; // e.g., 'client1'
-    ```
+2.  Add the following line and save the file:
 
-5.  **Set Up the Cron Job:**
-    Open the root crontab (`sudo crontab -e`) and add this line to run the parser every 5 minutes:
-    ```crontab
+    ```cron
     */5 * * * * /usr/bin/php /var/www/html/btcnode/parser.php >/dev/null 2>&1
     ```
-    Run it once manually to initialize everything: `sudo /usr/bin/php /var/www/html/btcnode/parser.php`
+
+3.  Run the parser manually once to initialize the database and stats file:
+
+    ```bash
+    sudo /usr/bin/php /var/www/html/btcnode/parser.php
+    ```
+
+Your stats page should now be live and collecting data!
 
 ---
 
 ## 💖 Support
 
-If you find this project useful and want to support its development, donations are welcome!
+If you find this project useful and want to show your appreciation, donations are welcome!
 
 **BTC:** `1HANfVCfy9CFp5JAjNBhKWPWbavjXxdCRR`
 
