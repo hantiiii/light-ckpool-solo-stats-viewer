@@ -23,6 +23,7 @@ A live version of this stats viewer is running at:
 This project is a statistics viewer **for an existing, running instance of ckpool**. It does not include the mining pool software itself. You must have a functional `ckpool` installation.
 
 * **ckpool Source & Info:** [ckolivas/ckpool on Bitbucket](https://bitbucket.org/ckolivas/ckpool-solo/src/solobtc/)
+* **Bitcoin Core Full Node:** A local, running Bitcoin full node with RPC access is required for the difficulty prediction feature (`bitcoin-cli`).
 
 ## ✨ Key Features
 
@@ -33,6 +34,8 @@ This project is a statistics viewer **for an existing, running instance of ckpoo
 * **Secure by Design:** Protected against common web vulnerabilities (XSS, SQL Injection). The parser script is secured from public web access via NGINX.
 * **Self-Contained:** No external API calls are needed for core functionality.
 * **Detailed Metrics:** Includes "time ago" formatting, block finding probability estimates, and rejected share rates.
+* **Detailed Worker Statistics:** View stats for each individual worker, including hashrate and shares, in an expandable interface.
+* **Advanced Analytics:** Includes tracking of network difficulty changes and a unique prediction model for the next adjustment, powered by your local full node.
 
 ---
 
