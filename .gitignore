@@ -5,6 +5,7 @@
 # Data and state files
 stats.json
 parser.state
+data/
 
 # IDE configuration files
 .vscode/
