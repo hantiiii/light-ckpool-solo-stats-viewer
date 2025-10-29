@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PHP Version](https://img.shields.io/badge/php-8.0%2B-blue.svg)](https://www.php.net/)
 
-A modern, fast, and secure PHP-based web interface for viewing **ckpool** statistics. It features a lightweight "Liquid Lava" design (using Inter & JetBrains Mono fonts), dynamic multi-series charts, automatic light/dark theme switching, and is built for performance using SQLite and a local `bitcoind` node.
+A modern, fast, and secure PHP-based web interface for viewing **ckpool** statistics. It features a lightweight "Liquid Lava" design (using Inter & JetBrains Mono fonts), dynamic multi-series charts (up to 1 year), automatic light/dark theme switching, and is built for performance using SQLite and a local `bitcoind` node.
 
 ---
 
@@ -24,20 +24,22 @@ This project is a statistics viewer **for an existing, running instance of ckpoo
 * **Bitcoin Core:** A running `bitcoind` node accessible via `bitcoin-cli` by a dedicated user (e.g., `bitcoinnode`).
 * **PHP Extensions:** `php-sqlite3`, `php-curl`.
 
-## ? Key Features
+## ✨ Key Features
 
 * **Local-First Data:** Fetches all critical data (block height, difficulty, last block reward) **primarily from your local `bitcoin-cli` node** for maximum reliability and speed.
-* **Live Price:** BTC/USD price is updated every 5 minutes from public APIs (with fallbacks) to provide an accurate "Prize to Win" value.
-* **Hybrid Prediction:** A unique difficulty adjustment prediction that blends local `bitcoin-cli` calculations with Mempool API data.
+* **Live "Prize to Win":** The block reward value is calculated "live" by combining the latest block reward + price (fetched every 3-5 min) with the latest block height (fetched every 3-5 min).
+* **H.A.N.T.I. Prediction Model 🚀:** A unique, hybrid difficulty adjustment prediction that blends local `bitcoin-cli` calculations with live network hashrate trends for a robust, weighted estimate.
+* **API Fallbacks:** Intelligently falls back to public APIs (Mempool.space, Coinbase, Binance, Kraken) for data if the local node or primary API fails, including a multi-stage fallback for price.
 * **Highly Performant:** Two optimized background cron jobs handle all data fetching:
-    * **`parser.php` (5 min):** Fetches user/pool stats, block height, block reward, and live price.
-    * **`prediction_parser.php` (4x/day):** Fetches network hashrate and calculates difficulty prediction.
+    * **`parser.php` (5 min):** Fetches all high-frequency data: user/pool stats, block height, block reward, and live BTC price. Stores in `stats.db`.
+    * **`prediction_parser.php` (4x/day):** Fetches all low-frequency data: network hashrate, difficulty, and calculates the H.A.N.T.I. prediction. Stores in `network.db`.
+* **1-Year Historical Charts:** Efficiently displays long-term charts by using an automatic daily "roll-up" (aggregation) of raw data, ensuring fast load times.
 * **Modern UI:** A clean interface featuring **Inter** and **JetBrains Mono** fonts, with automatic light/dark mode.
-* **Secure by Design:** Parser scripts and the `data` directory are secured from public web access via NGINX.
+* **Secure by Design:** Parser scripts (`parser.php`, `prediction_parser.php`, `common.php`) and the `data` directory are secured from public web access via NGINX.
 
 ---
 
-## ? Installation Guide
+## 🚀 Installation Guide
 
 ### 1. Clone the Repository
 
@@ -50,7 +52,7 @@ git clone [https://github.com/hantiiii/light-ckpool-solo-stats-viewer.git](https
 
 ### 2. Configure NGINX
 
-Add a server block to your NGINX configuration to serve the application and secure the data directory and all parser scripts.
+Add a server block to your NGINX configuration to serve the application and secure the data directory and parser scripts.
 
 ```nginx
 server {
@@ -124,22 +126,22 @@ $bitcoinCliUser = 'bitcoinnode'; // User running bitcoind
 $bitcoinCliPath = '/usr/local/bin/bitcoin-cli'; // Path to bitcoin-cli
 ```
 
-**In `parser.php` (5-min Cron Config):**
+**In `parser.php` (Cron 1 Config):**
 
 ```php
 // in /var/www/html/btcnode/parser.php
-$webUser = 'www-data';
-$webGroup = 'www-data';
-$usersDir = '/var/log/ckpool/users/'; // Path to ckpool user status files
-$poolDir = '/var/log/ckpool/pool/'; // Path to ckpool pool status file
+$webUser = 'web1';
+$webGroup = 'client1';
+$usersDir = '/var/log/ckpool/users/';
+$poolDir = '/var/log/ckpool/pool/';
 ```
 
-**In `prediction_parser.php` (4-hour Cron Config):**
+**In `prediction_parser.php` (Cron 2 Config):**
 
 ```php
 // in /var/www/html/btcnode/prediction_parser.php
-$webUser = 'www-data';
-$webGroup = 'www-data';
+$webUser = 'web1';
+$webGroup = 'client1';
 $logFilePath = '/var/log/ckpool/ckpool.log'; // Fallback for difficulty
 ```
 
@@ -151,14 +153,14 @@ Two cron jobs are needed, running as `root` (which allows `sudo -u bitcoinnode .
     ```bash
     sudo crontab -e
     ```
-2.  Add the following lines (adjust paths and schedule as needed) and save the file:
+2.  Add the following lines (example schedule: 3 min & 8x/day) and save the file:
 
     ```cron
-    # (5 min) Update user stats, pool stats, block height, block reward, and price
-    */5 * * * * /usr/bin/php /var/www/html/btcnode/parser.php >/dev/null 2>&1
+    # (3 min) Update user stats, pool stats, block height, block reward, and price
+    */3 * * * * /usr/bin/php /var/www/html/btcnode/parser.php >/dev/null 2>&1
 
-    # (4x/day) Update network hashrate, difficulty, and prediction data
-    33 2,8,14,20 * * * /usr/bin/php /var/www/html/btcnode/prediction_parser.php >/dev/null 2>&1 
+    # (8x/day) Update network hashrate, difficulty, and prediction data
+    33 0,3,6,9,12,15,18,21 * * * /usr/bin/php /var/www/html/btcnode/prediction_parser.php >/dev/null 2>&1 
     ```
 
 ### 6. Run Manually
@@ -170,11 +172,11 @@ sudo /usr/bin/php /var/www/html/btcnode/parser.php
 sudo /usr/bin/php /var/www/html/btcnode/prediction_parser.php
 ```
 
-Your stats page should now be live!
+Your stats page should now be live! The 1Y chart data will start populating after the first daily aggregation (runs automatically after midnight).
 
 ---
 
-## ? Support
+## 💖 Support
 
 If you find this project useful and want to show your appreciation, donations are welcome!
 
@@ -182,6 +184,6 @@ If you find this project useful and want to show your appreciation, donations ar
 
 ---
 
-## ? License
+## 📄 License
 
 This project is licensed under the MIT License.
