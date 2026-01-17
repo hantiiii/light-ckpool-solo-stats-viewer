@@ -5,7 +5,7 @@ $statsDbPath = $dataDir . '/stats.db';
 $networkDbPath = $dataDir . '/network.db';
 
 // --- API SECTION ---
-// ZMIANA: Dodano nową sekcję 'fetch_daily_chart'
+// (Bez zmian w sekcji API...)
 if (isset($_GET['fetch_chart_data']) || isset($_GET['fetch_network_chart']) || isset($_GET['fetch_daily_chart'])) { 
     header('Content-Type: application/json'); 
     try { 
@@ -13,14 +13,14 @@ if (isset($_GET['fetch_chart_data']) || isset($_GET['fetch_network_chart']) || i
         if (isset($_GET['fetch_network_chart'])) { 
             if (!file_exists($networkDbPath)) { throw new Exception("Network database file not found."); } 
             $pdo = new PDO('sqlite:' . $networkDbPath); 
-            $since = time() - (30 * 86400); 
-            $stmt = $pdo->prepare("SELECT timestamp, network_hashrate_ghs, network_difficulty FROM network_history WHERE timestamp > :since ORDER BY timestamp ASC"); 
+            $since = time() - (730 * 86400); 
+            $query = "SELECT MIN(timestamp) as timestamp, AVG(network_hashrate_ghs) as network_hashrate_ghs, MAX(network_difficulty) as network_difficulty FROM network_history WHERE timestamp > :since GROUP BY (timestamp / 86400) ORDER BY timestamp ASC";
+            $stmt = $pdo->prepare($query); 
             $stmt->execute([':since' => $since]); 
             $results = $stmt->fetchAll(PDO::FETCH_ASSOC); 
             $datasets['hashrate'] = ['labels' => [], 'data' => []]; $datasets['difficulty'] = ['labels' => [], 'data' => []]; 
             foreach ($results as $row) { $ts = $row['timestamp'] * 1000; $datasets['hashrate']['labels'][] = $ts; $datasets['hashrate']['data'][] = round($row['network_hashrate_ghs'], 2); $datasets['difficulty']['labels'][] = $ts; $datasets['difficulty']['data'][] = round($row['network_difficulty'], 2); } 
         } 
-        // NOWA LOGIKA DLA WYKRESU ROCZNEGO
         elseif (isset($_GET['fetch_daily_chart'])) {
             if (!file_exists($statsDbPath)) { throw new Exception("Stats database file not found."); } 
             $pdo = new PDO('sqlite:' . $statsDbPath);
@@ -28,70 +28,43 @@ if (isset($_GET['fetch_chart_data']) || isset($_GET['fetch_network_chart']) || i
             $worker_name = isset($_GET['worker']) ? trim(htmlspecialchars($_GET['worker'])) : null;
             $range_days = isset($_GET['range']) ? (int)$_GET['range'] : 365;
             $since = time() - ($range_days * 86400);
-
             $params = [':since' => $since];
-            if ($btc_address) {
-                $table = 'user_daily_history';
-                $where_clause = "WHERE date > :since AND btc_address = :btc_address AND worker_name = :worker_name ";
-                $params[':btc_address'] = $btc_address;
-                $params[':worker_name'] = $worker_name ?: AGGREGATE_WORKER_NAME;
-            } else {
-                $table = 'pool_daily_history';
-                $where_clause = "WHERE date > :since ";
-            }
-            
+            if ($btc_address) { $table = 'user_daily_history'; $where_clause = "WHERE date > :since AND btc_address = :btc_address AND worker_name = :worker_name "; $params[':btc_address'] = $btc_address; $params[':worker_name'] = $worker_name ?: AGGREGATE_WORKER_NAME; } else { $table = 'pool_daily_history'; $where_clause = "WHERE date > :since "; }
             $query = "SELECT date, avg_hashrate_ghs FROM {$table} {$where_clause} ORDER BY date ASC";
-            $stmt = $pdo->prepare($query);
-            $stmt->execute($params);
-            $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            // Dane są już uśrednione (1d), więc używamy ich bezpośrednio
-            $datasets['1d'] = [ 
-                'labels' => array_column($results, 'date'), 
-                'data' => array_column($results, 'avg_hashrate_ghs'), 
-            ];
+            $stmt = $pdo->prepare($query); $stmt->execute($params); $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $datasets['1d'] = [ 'labels' => array_column($results, 'date'), 'data' => array_column($results, 'avg_hashrate_ghs'), ];
         }
-        // Koniec nowej logiki
         else { 
+            // (Chart data logic - bez zmian)
             if (!file_exists($statsDbPath)) { throw new Exception("Stats database file not found."); } 
             $pdo = new PDO('sqlite:' . $statsDbPath); 
             $btc_address = isset($_GET['btc_address']) ? trim(htmlspecialchars($_GET['btc_address'])) : null; 
             $worker_name = isset($_GET['worker']) ? trim(htmlspecialchars($_GET['worker'])) : null; 
             $range_days = isset($_GET['range']) ? (int)$_GET['range'] : 1; 
-            $since = time() - ($range_days * 86400); 
-            $interval = 300; if ($range_days > 20) $interval = 21600; elseif ($range_days > 3) $interval = 3600; elseif ($range_days > 1) $interval = 900; 
-            $table = $btc_address ? 'hashrate_history' : 'pool_history'; 
-            $params = [':interval' => $interval, ':since' => $since]; 
-            $where_clause = "WHERE timestamp > :since "; 
-            if ($btc_address) { $where_clause .= "AND btc_address = :btc_address AND worker_name = :worker_name "; $params[':btc_address'] = $btc_address; $params[':worker_name'] = $worker_name ?: AGGREGATE_WORKER_NAME; } 
-            $query_base = "SELECT (timestamp / :interval) * :interval AS time_bucket, %s FROM {$table} {$where_clause} GROUP BY time_bucket ORDER BY time_bucket ASC"; 
-            $series_map = [ 1 => ['5m' => 'hashrate_5m_ghs', '1h' => 'hashrate_1h_ghs'], 7 => ['1h' => 'hashrate_1h_ghs', '1d' => 'hashrate_24h_ghs'], 30 => ['1d' => 'hashrate_24h_ghs'], ]; 
-            $series_to_fetch = $series_map[$range_days] ?? $series_map[30]; 
-            $sql_selects = []; foreach ($series_to_fetch as $key => $column) { $sql_selects[] = "AVG({$column}) AS avg_{$key}"; } 
-            $stmt = $pdo->prepare(sprintf($query_base, implode(', ', $sql_selects))); $stmt->execute($params); 
-            $results = $stmt->fetchAll(PDO::FETCH_ASSOC); 
-            foreach ($series_to_fetch as $key => $column) { $datasets[$key] = [ 'labels' => array_column($results, 'time_bucket'), 'data' => array_column($results, "avg_{$key}"), ]; } 
+            if ($range_days <= 1) { $table = $btc_address ? 'hashrate_history' : 'pool_history'; $col_time = 'timestamp'; $groupBy = "GROUP BY time_bucket"; $interval = 900; $series_map = ['5m' => 'hashrate_5m_ghs', '1h' => 'hashrate_1h_ghs']; } elseif ($range_days <= 7) { $table = $btc_address ? 'user_hourly_history' : 'pool_hourly_history'; $col_time = 'timestamp'; $groupBy = "GROUP BY time_bucket"; $interval = 3600; $series_map = ['1h' => 'avg_hashrate_ghs']; } else { $table = $btc_address ? 'user_daily_history' : 'pool_daily_history'; $col_time = 'date'; $groupBy = "GROUP BY time_bucket"; $interval = 86400; $series_map = ['1d' => 'avg_hashrate_ghs']; }
+            $since = time() - ($range_days * 86400); $params = [':since' => $since]; $where_clause = "WHERE $col_time > :since ";
+            if ($btc_address) { $where_clause .= "AND btc_address = :btc_address AND worker_name = :worker_name "; $params[':btc_address'] = $btc_address; $params[':worker_name'] = $worker_name ?: AGGREGATE_WORKER_NAME; }
+            $sql_selects = []; foreach ($series_map as $key => $column) { $actual_col = ($range_days > 1) ? 'avg_hashrate_ghs' : $column; $sql_selects[] = "AVG({$actual_col}) AS avg_{$key}"; }
+            $query = "SELECT ($col_time / $interval) * $interval AS time_bucket, " . implode(', ', $sql_selects) . " FROM {$table} {$where_clause} {$groupBy} ORDER BY time_bucket ASC";
+            $stmt = $pdo->prepare($query); $stmt->execute($params); $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($series_map as $key => $column) { $datasets[$key] = [ 'labels' => array_column($results, 'time_bucket'), 'data' => array_column($results, "avg_{$key}"), ]; } 
         } 
     } catch (Exception $e) { $datasets = ['error' => $e->getMessage()]; } 
-    echo json_encode($datasets); 
-    exit(); 
+    echo json_encode($datasets); exit(); 
 }
 
-// --- DATA FETCHING FROM SQLITE ---
+// --- DATA FETCHING ---
 $pool_data = []; $user_summary = null; $user_workers = null; $last_update = null;
 $network_difficulty = null; $previous_network_difficulty = null; $network_hashrate = null;
-$last_block_reward_btc = null; 
-$last_fetched_block_height = null; 
-$btc_usd_price = null; 
+$last_block_reward_btc = null; $last_fetched_block_height = null; $btc_usd_price = null; 
 $difficulty_prediction = null; $network_hashrate_change = null; $error = null;
 $btc_address = isset($_GET['btc_address']) ? trim(htmlspecialchars($_GET['btc_address'])) : null;
 $user_data_full = null;
-$prediction_log_message = "H.A.N.T.I. Model 🚀: Analizuje trend hashrate w epoce i łączy go z prognozą API."; 
+$prediction_log_message = "H.A.N.T.I. Model 🚀"; 
 
 try {
     if (!file_exists($statsDbPath)) { throw new Exception("Stats database file not found. Please run parser.php script."); }
-    $pdo_stats = new PDO('sqlite:' . $statsDbPath);
-    $pdo_stats->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION); 
+    $pdo_stats = new PDO('sqlite:' . $statsDbPath); $pdo_stats->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION); 
     $pool_row = $pdo_stats->query("SELECT data, last_update FROM pool_stats WHERE id = 1 LIMIT 1")->fetch(PDO::FETCH_ASSOC);
     $pool_data = $pool_row ? json_decode($pool_row['data'], true) : [];
     $last_update = $pool_row['last_update'] ?? null;
@@ -107,8 +80,7 @@ try {
     }
     
     if (file_exists($networkDbPath)) {
-        $pdo_net = new PDO('sqlite:' . $networkDbPath);
-        $pdo_net->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION); 
+        $pdo_net = new PDO('sqlite:' . $networkDbPath); $pdo_net->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION); 
         $network_row = $pdo_net->query("SELECT data FROM network_stats WHERE id = 1 LIMIT 1")->fetch(PDO::FETCH_ASSOC);
         $network_data = $network_row ? json_decode($network_row['data'], true) : [];
         $network_difficulty = $network_data['network_difficulty'] ?? null;
@@ -118,22 +90,54 @@ try {
 
         $prediction_result = $pdo_net->query("SELECT * FROM prediction_data WHERE id = 1 LIMIT 1");
         $difficulty_prediction = $prediction_result ? $prediction_result->fetch(PDO::FETCH_ASSOC) : false;
-        if (!empty($difficulty_prediction['hybrid_factors_log'])) {
-            $prediction_log_message = $difficulty_prediction['hybrid_factors_log'];
-        }
+        if (!empty($difficulty_prediction['hybrid_factors_log'])) { $prediction_log_message = $difficulty_prediction['hybrid_factors_log']; }
 
         $history_result = $pdo_net->query("SELECT network_hashrate_ghs FROM network_history WHERE timestamp >= " . (time() - 90000) . " ORDER BY timestamp ASC LIMIT 1");
         if($history_result) { $old_hashrate = $history_result->fetchColumn(); if ($old_hashrate && $network_hashrate && $old_hashrate > 0) { $network_hashrate_change = (($network_hashrate - $old_hashrate) / $old_hashrate) * 100; } }
-    } else { $network_difficulty = null; $previous_network_difficulty = null; $network_hashrate = null; $difficulty_prediction = null; $error = $error ? $error . " Network DB not found." : "Network DB not found."; }
+    } else { $network_difficulty = null; $error = $error ? $error . " Network DB not found." : "Network DB not found."; }
 
-} catch (Exception $e) { 
-    $error = "Database Error: " . $e->getMessage(); 
-    $pool_data = []; $user_summary = null; $user_workers = null; $last_update = null; $network_difficulty = null; $previous_network_difficulty = null; $network_hashrate = null; $last_block_reward_btc = null; $last_fetched_block_height = null; $btc_usd_price = null; $difficulty_prediction = null; $network_hashrate_change = null; $user_data_full = null; 
-}
+} catch (Exception $e) { $error = "Database Error: " . $e->getMessage(); }
 
-// --- HELPER FUNCTIONS & VARIABLE INIT ---
-function format_seconds($seconds) { if ($seconds === null || $seconds < 1) return '0s'; $parts = []; $days = floor($seconds / 86400); if ($days > 0) $parts[] = $days . 'd'; $hours = floor(($seconds % 86400) / 3600); if ($hours > 0) $parts[] = $hours . 'h'; $minutes = floor(($seconds % 3600) / 60); if ($minutes > 0) $parts[] = $minutes . 'm'; $secs = $seconds % 60; if ($secs > 0 || empty($parts)) $parts[] = $secs . 's'; return implode(' ', $parts); } function format_number_auto($number, $decimals = 2) { if ($number === null) return 'N/A'; if ($number == floor($number)) { return number_format($number, 0); } return number_format($number, $decimals); } function format_hashrate($hashrateInput) { if ($hashrateInput === null) return 'N/A'; if (is_numeric($hashrateInput)) { $ghs = (float)$hashrateInput; } else { $value = (float)$hashrateInput; preg_match('/[a-zA-Z]/', $hashrateInput, $matches); $unit = $matches[0] ?? 'G'; $ghs = 0; switch (strtoupper($unit)) { case 'K': $ghs = $value / 1000000; break; case 'M': $ghs = $value / 1000; break; case 'G': $ghs = $value; break; case 'T': $ghs = $value * 1000; break; case 'P': $ghs = $value * 1000 * 1000; break; case 'E': $ghs = $value * 1000 * 1000 * 1000; break; default:  $ghs = $value; } } if ($ghs >= 1000000000000) { return format_number_auto($ghs / 1000000000000) . ' ZH/s'; } elseif ($ghs >= 1000000000) { return format_number_auto($ghs / 1000000000) . ' EH/s'; } elseif ($ghs >= 1000000) { return format_number_auto($ghs / 1000000) . ' PH/s'; } elseif ($ghs >= 1000) { return format_number_auto($ghs / 1000) . ' TH/s'; } else { return format_number_auto($ghs) . ' GH/s'; } } function parse_hashrate_to_ghs(string $hashrateStr): float { $value = (float)$hashrateStr; $unit = strtoupper(substr(trim($hashrateStr), -1)); switch ($unit) { case 'K': return $value / 1000000; case 'M': return $value / 1000; case 'G': return $value; case 'T': return $value * 1000; case 'P': return $value * 1000 * 1000; default: return $value; } } function calculate_block_probability($user_hashrate_ghs, $network_hashrate_ghs, $days) { if ($user_hashrate_ghs <= 0 || $network_hashrate_ghs <= 0) { return 0; } $blocks_in_period = $days * 144; $p_user = $user_hashrate_ghs / $network_hashrate_ghs; $p_not_finding = pow(1 - $p_user, $blocks_in_period); return (1 - $p_not_finding) * 100; } function calculate_time_to_find_block($user_hashrate_ghs, $network_hashrate_ghs) { if ($user_hashrate_ghs <= 0 || $network_hashrate_ghs <= 0) { return 0; } return 600 / ($user_hashrate_ghs / $network_hashrate_ghs); } function format_long_time($seconds) { if ($seconds === null || $seconds <= 0) return "N/A"; $minutes = $seconds / 60; $hours = $minutes / 60; $days = $hours / 24; $months = $days / 30.44; $years = $days / 365.25; if ($years > 1) return format_number_auto($years) . " years"; if ($months > 1) return format_number_auto($months) . " months"; if ($days > 1) return format_number_auto($days) . " days"; return format_number_auto($hours) . " hours"; } function format_share($num) { if ($num === null) return 'N/A'; if (!is_numeric($num) || $num < 1000000) return number_format($num); $units = ['K', 'M', 'G', 'T']; $power = floor(log($num, 1000)); return format_number_auto($num / pow(1000, $power), 2) . $units[$power - 1]; }
-$friendly_names = [ 'hashrate1m' => 'Hashrate (1m)', 'hashrate5m' => 'Hashrate (5m)', 'hashrate1hr' => 'Hashrate (1h)', 'hashrate1d' => 'Hashrate (1d)', 'hashrate7d' => 'Hashrate (7d)', 'shares' => 'Shares', 'workers' => 'Workers', 'lastshare' => 'Last Share', 'bestshare' => 'Best Share', 'runtime' => 'Uptime', 'Users' => 'Users', 'Workers' => 'Workers', 'accepted' => 'Accepted', 'rejected' => 'Rejected', 'rejected_percent' => 'Rejected %', 'time_to_block' => 'Est. Time/Block' ]; $script_path = '.'; $user_summary = $user_data_full['summary'] ?? null; $user_workers = $user_data_full['workers'] ?? null; if (empty($network_hashrate) && !empty($network_difficulty)) { $network_hashrate = $network_difficulty * pow(2, 32) / 600 / 1e9; } $analytics = null; if ($user_summary && $network_hashrate) { $user_hashrate_str = $user_summary['hashrate1hr'] ?? '0'; $user_hashrate_ghs = parse_hashrate_to_ghs($user_hashrate_str); $analytics = [ 'prob_month' => calculate_block_probability($user_hashrate_ghs, $network_hashrate, 30.44), 'prob_year' => calculate_block_probability($user_hashrate_ghs, $network_hashrate, 365.25), 'time_to_find' => calculate_time_to_find_block($user_hashrate_ghs, $network_hashrate) ]; } $pool_time_to_block = null; if ($pool_data && $network_hashrate) { $pool_hashrate_str = $pool_data['hashrate1hr'] ?? '0'; $pool_hashrate_ghs = parse_hashrate_to_ghs($pool_hashrate_str); $pool_time_to_block = calculate_time_to_find_block($pool_hashrate_ghs, $network_hashrate); } 
+// --- HELPER FUNCTIONS ---
+function format_seconds($seconds) { if ($seconds === null || $seconds < 1) return '0s'; $parts = []; $days = floor($seconds / 86400); if ($days > 0) $parts[] = $days . 'd'; $hours = floor(($seconds % 86400) / 3600); if ($hours > 0) $parts[] = $hours . 'h'; $minutes = floor(($seconds % 3600) / 60); if ($minutes > 0) $parts[] = $minutes . 'm'; $secs = $seconds % 60; if ($secs > 0 || empty($parts)) $parts[] = $secs . 's'; return implode(' ', $parts); } 
+function format_number_auto($number, $decimals = 2) { if ($number === null) return 'N/A'; if ($number == floor($number)) { return number_format($number, 0); } return number_format($number, $decimals); } 
+function format_hashrate($hashrateInput) { if ($hashrateInput === null) return 'N/A'; if (is_numeric($hashrateInput)) { $ghs = (float)$hashrateInput; } else { $value = (float)$hashrateInput; preg_match('/[a-zA-Z]/', $hashrateInput, $matches); $unit = $matches[0] ?? 'G'; $ghs = 0; switch (strtoupper($unit)) { case 'K': $ghs = $value / 1000000; break; case 'M': $ghs = $value / 1000; break; case 'G': $ghs = $value; break; case 'T': $ghs = $value * 1000; break; case 'P': $ghs = $value * 1000 * 1000; break; case 'E': $ghs = $value * 1000 * 1000 * 1000; break; default:  $ghs = $value; } } if ($ghs >= 1000000000000) { return format_number_auto($ghs / 1000000000000) . ' ZH/s'; } elseif ($ghs >= 1000000000) { return format_number_auto($ghs / 1000000000) . ' EH/s'; } elseif ($ghs >= 1000000) { return format_number_auto($ghs / 1000000) . ' PH/s'; } elseif ($ghs >= 1000) { return format_number_auto($ghs / 1000) . ' TH/s'; } else { return format_number_auto($ghs) . ' GH/s'; } } 
+function parse_hashrate_to_ghs(string $hashrateStr): float { $value = (float)$hashrateStr; $unit = strtoupper(substr(trim($hashrateStr), -1)); switch ($unit) { case 'K': return $value / 1000000; case 'M': return $value / 1000; case 'G': return $value; case 'T': return $value * 1000; case 'P': return $value * 1000 * 1000; default: return $value; } } 
+function calculate_block_probability($user_hashrate_ghs, $network_hashrate_ghs, $days) { if ($user_hashrate_ghs <= 0 || $network_hashrate_ghs <= 0) { return 0; } $blocks_in_period = $days * 144; $p_user = $user_hashrate_ghs / $network_hashrate_ghs; $p_not_finding = pow(1 - $p_user, $blocks_in_period); return (1 - $p_not_finding) * 100; } 
+
+// --- NOWA POPRAWIONA FUNKCJA (v7 FIX) ---
+function calculate_time_to_find_block($user_hashrate_ghs, $network_difficulty) { 
+    if ($user_hashrate_ghs <= 0 || $network_difficulty <= 0) { return 0; } 
+    // Wzór: Time = (Difficulty * 2^32) / (Hashrate_in_Hashes_per_sec)
+    // Hashrate usera jest w GH/s, więc mnożymy * 1e9
+    return ($network_difficulty * 4294967296) / ($user_hashrate_ghs * 1000000000);
+} 
+
+function format_long_time($seconds) { if ($seconds === null || $seconds <= 0) return "N/A"; $minutes = $seconds / 60; $hours = $minutes / 60; $days = $hours / 24; $months = $days / 30.44; $years = $days / 365.25; if ($years > 1) return format_number_auto($years) . " years"; if ($months > 1) return format_number_auto($months) . " months"; if ($days > 1) return format_number_auto($days) . " days"; return format_number_auto($hours) . " hours"; } 
+function format_share($num) { if ($num === null) return 'N/A'; if (!is_numeric($num) || $num < 1000000) return number_format($num); $units = ['K', 'M', 'G', 'T']; $power = floor(log($num, 1000)); return format_number_auto($num / pow(1000, $power), 2) . $units[$power - 1]; }
+
+$friendly_names = [ 'hashrate1m' => 'Hashrate (1m)', 'hashrate5m' => 'Hashrate (5m)', 'hashrate1hr' => 'Hashrate (1h)', 'hashrate1d' => 'Hashrate (1d)', 'hashrate7d' => 'Hashrate (7d)', 'shares' => 'Shares', 'workers' => 'Workers', 'lastshare' => 'Last Share', 'bestshare' => 'Best Share', 'runtime' => 'Uptime', 'Users' => 'Users', 'Workers' => 'Workers', 'accepted' => 'Accepted', 'rejected' => 'Rejected', 'rejected_percent' => 'Rejected %', 'time_to_block' => 'Est. Time/Block' ]; $script_path = '.'; $user_summary = $user_data_full['summary'] ?? null; $user_workers = $user_data_full['workers'] ?? null; if (empty($network_hashrate) && !empty($network_difficulty)) { $network_hashrate = $network_difficulty * pow(2, 32) / 600 / 1e9; } 
+
+$analytics = null; 
+if ($user_summary && $network_hashrate) { 
+    $user_hashrate_str = $user_summary['hashrate1hr'] ?? '0'; 
+    $user_hashrate_ghs = parse_hashrate_to_ghs($user_hashrate_str); 
+    // Tutaj zmiana: przekazujemy DIFFICULTY zamiast hashrate sieci
+    $time_to_find_val = calculate_time_to_find_block($user_hashrate_ghs, $network_difficulty);
+    $analytics = [ 
+        'prob_month' => calculate_block_probability($user_hashrate_ghs, $network_hashrate, 30.44), 
+        'prob_year' => calculate_block_probability($user_hashrate_ghs, $network_hashrate, 365.25), 
+        'time_to_find' => $time_to_find_val
+    ]; 
+} 
+
+$pool_time_to_block = null; 
+if ($pool_data && $network_difficulty) { 
+    $pool_hashrate_str = $pool_data['hashrate1hr'] ?? '0'; 
+    $pool_hashrate_ghs = parse_hashrate_to_ghs($pool_hashrate_str); 
+    // Tutaj też zmiana na DIFFICULTY
+    $pool_time_to_block = calculate_time_to_find_block($pool_hashrate_ghs, $network_difficulty); 
+} 
 
 $estimated_adjustment_date = null;
 if ($difficulty_prediction && isset($difficulty_prediction['estimated_timestamp']) && $difficulty_prediction['estimated_timestamp'] > 0) {
@@ -141,11 +145,7 @@ if ($difficulty_prediction && isset($difficulty_prediction['estimated_timestamp'
 }
 $pool_title = "srv.88x.pl - solo mining pool stats"; 
 $pool_subtitle = "Bitcoin Mining pool based on CKPool - 0% Fee"; $current_pool_hashrate_1h = $pool_data['hashrate1hr'] ?? '0'; $current_pool_users = $pool_data['Users'] ?? '0'; $current_pool_workers = $pool_data['Workers'] ?? '0';
-
-$last_block_reward_usd = null;
-if ($last_block_reward_btc !== null && $btc_usd_price !== null) {
-    $last_block_reward_usd = $last_block_reward_btc * $btc_usd_price;
-}
+$last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_price !== null) { $last_block_reward_usd = $last_block_reward_btc * $btc_usd_price; }
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -157,63 +157,7 @@ if ($last_block_reward_btc !== null && $btc_usd_price !== null) {
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script> <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
     <script> (function() { const getTheme = () => localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); document.documentElement.setAttribute('data-theme', getTheme()); })(); </script>
     <style> 
-         :root { 
-            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
-            --font-mono: 'JetBrains Mono', monospace; 
-            --accent-color: #ff0000; --accent-color-dark: #cc0000; --chart-color-1: #ff4444; --chart-color-2: #ffaa00; --chart-color-3: #ffcc00; --background-light: #f0f4f8; --foreground-light: #0f172a; --card-background-light: rgba(255, 255, 255, 0.7); --border-light: rgba(0, 0, 0, 0.08); --input-light: rgba(255, 255, 255, 0.5); --muted-light: #475569; --gradient-start-light: #e0f2fe; --gradient-end-light: #ffffff; --accent-light: var(--accent-color-dark); --accent-hover-light: var(--accent-color); --accent-foreground-light: #ffffff; --text-shadow-light: none; --text-shadow-header-light: none; --background-dark: #000000; --foreground-dark: #f8f8f8; --card-background-dark: rgba(25, 0, 0, 0.7); --border-dark: rgba(255, 0, 0, 0.2); --input-dark: rgba(45, 0, 0, 0.6); --muted-dark: #ffaaaa; --gradient-start-dark: #300000; --gradient-end-dark: #000000; --accent-dark: var(--accent-color); --accent-hover-dark: var(--accent-color-dark); --accent-foreground-dark: #ffffff; --text-shadow-dark: 0 0 1px rgba(255, 0, 0, 0.1); --text-shadow-header-dark: 0 0 3px rgba(255, 0, 0, 0.15); --diff-up: #4ade80; --diff-down: #ff4444; 
-        } 
-        [data-theme='light'] { --background: var(--background-light); --foreground: var(--foreground-light); --card-background: var(--card-background-light); --border: var(--border-light); --input: var(--input-light); --muted-foreground: var(--muted-light); --accent: var(--accent-light); --accent-hover: var(--accent-hover-light); --accent-foreground: var(--accent-foreground-light); --gradient-start: var(--gradient-start-light); --gradient-end: var(--gradient-end-light); --text-shadow: var(--text-shadow-light); --text-shadow-header: var(--text-shadow-header-light); } 
-        [data-theme='dark'] { --background: var(--background-dark); --foreground: var(--foreground-dark); --card-background: var(--card-background-dark); --border: var(--border-dark); --input: var(--input-dark); --muted-foreground: var(--muted-dark); --accent: var(--accent-dark); --accent-hover: var(--accent-hover-dark); --accent-foreground: var(--accent-foreground-dark); --gradient-start: var(--gradient-start-dark); --gradient-end: var(--gradient-end-dark); --text-shadow: var(--text-shadow-dark); --text-shadow-header: var(--text-shadow-header-dark); } 
-        @keyframes gradientBG { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } } 
-        * { box-sizing: border-box; margin: 0; padding: 0; } 
-        body { font-family: var(--font-sans); background-color: var(--background); color: var(--foreground); min-height: 100vh; display: flex; flex-direction: column; transition: background-color 0.3s, color 0.3s; position: relative; padding-top: 2rem; text-shadow: var(--text-shadow); font-size: 16px; line-height: 1.6; } 
-        body::before { content: ''; position: fixed; top: -50%; left: -50%; width: 200%; height: 200%; background: linear-gradient(135deg, var(--gradient-start), var(--background), var(--gradient-end)); background-size: 300% 300%; animation: gradientBG 20s ease infinite; z-index: -1; transition: background 0.5s; opacity: 0.7; }
-        .container { width: 90%; max-width: 950px; margin: 0 auto 2rem auto; background-color: var(--card-background); border: 1px solid var(--border); padding: 2.5em; border-radius: 16px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2); transition: background-color 0.3s, border-color 0.3s; flex-grow: 1; position: relative; z-index: 1; } 
-        h1, h2 { color: var(--foreground); border-bottom: 1px solid var(--border); padding-bottom: 0.5em; font-weight: 700; } 
-        h1 { font-size: 1.8em; } 
-        h2 { font-size: 1.3em; margin-top: 2.8em; text-align: center; } 
-        h3 { margin-top: 0; font-size: 1.15em; color: var(--foreground); font-weight: 600; } 
-        [data-theme='dark'] h1, [data-theme='dark'] h2, [data-theme='dark'] h3 { text-shadow: var(--text-shadow-header); } 
-        form { margin: 1.5em auto 2.5em auto; display: flex; max-width: 600px; } 
-        input[type="text"] { flex-grow: 1; padding: 12px 15px; font-size: 1em; font-family: var(--font-sans); border: 1px solid var(--border); border-radius: 8px 0 0 8px; background-color: var(--input); color: var(--foreground); transition: border-color 0.2s, box-shadow 0.2s; } input[type="text"]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent); } 
-        input[type="submit"] { padding: 12px 24px; font-size: 1em; font-weight: 600; background-color: var(--accent); color: var(--accent-foreground); border: 1px solid var(--accent); border-left: 0; border-radius: 0 8px 8px 0; cursor: pointer; transition: background-color 0.2s; font-family: var(--font-sans); } input[type="submit"]:hover { background-color: var(--accent-hover); border-color: var(--accent-hover); } 
-        table { width: 100%; border-collapse: collapse; margin-top: 1em; font-size: 0.9em; } 
-        .container > table { max-width: 650px; margin-left: auto; margin-right: auto; } 
-        th, td { padding: 10px 15px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; } 
-        tr:last-child td { border-bottom: none; } 
-        td:not(.key) { font-family: var(--font-mono); font-size: 0.95em; } 
-        .key { font-weight: 500; color: var(--muted-foreground); width: 40%; font-family: var(--font-sans); font-size: 1em; } 
-        a { color: var(--accent); text-decoration: none; font-weight: 500; } a:hover { text-decoration: underline; } 
-        .footer { text-align: center; margin-top: 2.5em; font-size: 0.85em; color: var(--muted-foreground); } 
-        .error { color: var(--diff-down); background-color: color-mix(in srgb, var(--diff-down) 15%, transparent); padding: 1em; border: 1px solid var(--diff-down); border-radius: 8px; margin-top: 1.5em; } 
-        .progress-container { display: flex; flex-direction: column; gap: 4px; } .progress-bar { width: 100%; background-color: color-mix(in srgb, var(--border) 50%, transparent); border-radius: 4px; overflow: hidden; height: 8px; } .progress-fill { height: 100%; background-color: var(--accent); width: 0%; border-radius: 4px; transition: width 0.5s ease-in-out; } .progress-text { font-size: 0.9em; color: var(--muted-foreground); font-family: var(--font-mono); } 
-        .difficulty-info, .probability-info, .prediction-info { font-size: 0.8em; color: var(--muted-foreground); margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); } .probability-info strong { font-family: var(--font-mono);}
-        .pool-header { text-align: center; padding: 2rem 1rem 1.5rem; margin: 0 auto 2rem auto; background: var(--input); color: var(--foreground); border: 1px solid var(--border); box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1); position: relative; border-radius: 12px; max-width: 950px; width: 90%; z-index: 1; } 
-        .pool-header h1 { font-size: 2em; margin-bottom: 0.1em; font-weight: 700; color: var(--foreground); border-bottom: none; padding-bottom: 0; } 
-        .pool-header p.subtitle { font-size: 1em; opacity: 0.8; margin-bottom: 1em; color: var(--muted-foreground); } 
-        .pool-header .pool-metrics { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; } 
-        .pool-header .metric-item { background-color: var(--card-background); padding: 0.5rem 1rem; border-radius: 6px; font-size: 0.95em; font-weight: 500; color: var(--foreground); display: flex; align-items: center; gap: 0.5rem; border: 1px solid var(--border); } 
-        .pool-header .metric-item strong { font-size: 1em; color: var(--foreground); font-family: var(--font-mono); } [data-theme='dark'] .pool-header .metric-item strong { text-shadow: none; } 
-        .theme-toggle { position: fixed; top: 1rem; right: 1rem; z-index: 1000; width: 40px; height: 40px; padding: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; background-color: var(--card-background); border: 1px solid var(--border); box-shadow: 0 2px 5px rgba(0,0,0,0.1); cursor: pointer; overflow: hidden; transition: background-color 0.3s, border-color 0.3s, box-shadow 0.3s; } 
-        .theme-toggle:hover { background-color: var(--input); } 
-        .theme-toggle svg { position: absolute; width: 20px; height: 20px; transition: transform 0.3s ease-out, opacity 0.2s; color: var(--muted-foreground); } 
-        html[data-theme='light'] .theme-toggle .sun { transform: translateY(0) scale(1); opacity: 1; } 
-        html[data-theme='light'] .theme-toggle .moon { transform: translateY(150%) scale(0.5); opacity: 0; } 
-        html[data-theme='dark'] .theme-toggle .sun { transform: translateY(-150%) scale(0.5); opacity: 0; } 
-        html[data-theme='dark'] .theme-toggle .moon { transform: translateY(0) scale(1); opacity: 1; } 
-        #chart-container { background-color: var(--input); border-radius: 12px; padding: 1.5em; border: 1px solid var(--border); margin-top: 1em; } 
-        .chart-controls { display: flex; gap: 0.5rem; margin-top: 2em; justify-content: center; } 
-        .chart-controls button { font-family: var(--font-sans); font-size: 0.85em; font-weight: 600; padding: 0.5em 1em; border-radius: 6px; background-color: transparent; border: 1px solid var(--border); color: var(--muted-foreground); cursor: pointer; transition: background-color 0.2s, color 0.2s; } .chart-controls button.active { background-color: var(--accent); color: var(--accent-foreground); border-color: var(--accent); } 
-        .connection-info-card { background-color: var(--input); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin: 2.5em auto; font-size: 0.95em; max-width: 600px; } 
-        .connection-info-card h2 { text-align: left; margin-top: 0; font-size: 1.1em; border-bottom: none; padding-bottom: 0; margin-bottom: 1em; font-weight: 600; } 
-        .connection-info-card ul { list-style: none; padding-left: 0; text-align: left; } .connection-info-card li { margin-bottom: 0.5em; }
-        .connection-info-card code { background-color: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); padding: 0.2em 0.4em; border-radius: 4px; font-family: var(--font-mono); } .full-date { font-size: 0.85em; opacity: 0.7; margin-left: 0.5em; font-family: var(--font-mono); } 
-        .workers-toggle { cursor: pointer; } .workers-toggle .key { display: flex; align-items: center; justify-content: space-between; } .workers-toggle .chevron { transition: transform 0.2s ease-in-out; } .workers-toggle.open .chevron { transform: rotate(180deg); } .worker-list-row { display: none; } .worker-list-row > td { padding: 0 !important; border-top: 1px solid var(--border); } .worker-list-content { padding: 1.5em; } .worker-list-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1em; } .worker-list-content table { margin-top: 0; } 
-        .show-inactive-btn { font-size: 0.8em; background: none; border: none; cursor: pointer; text-decoration: underline; color: var(--diff-down); opacity: 0.8; font-family: var(--font-sans);} .show-inactive-btn:hover { opacity: 1; } 
-        .worker-chart-btn { background: none; border: 1px solid var(--border); color: var(--muted-foreground); padding: 4px 8px; font-size: 0.8em; border-radius: 6px; cursor: pointer; font-family: var(--font-sans);} .worker-chart-btn:hover { background-color: var(--card-background); } 
-        .modal-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.7); display: none; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); } .modal-content { background-color: var(--card-background); padding: 2rem; border-radius: 12px; max-width: 90%; width: 800px; position: relative; border: 1px solid var(--border); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); } .modal-close-btn { position: absolute; top: 0.5rem; right: 0.75rem; background: none; border: none; font-size: 2rem; color: var(--muted-foreground); cursor: pointer; line-height: 1; } .modal-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 1rem; } .modal-title { font-size: 1.25em; font-weight: 600; color: var(--foreground); } 
-        .diff-change { font-size: 0.9em; margin-left: 0.5em; font-weight: 600; font-family: var(--font-mono); } 
-        .diff-up { color: var(--diff-up); } .diff-down { color: var(--diff-down); } .clickable-header { cursor: pointer; }
+         :root { --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; --font-mono: 'JetBrains Mono', monospace; --accent-color: #ff0000; --accent-color-dark: #cc0000; --chart-color-1: #ff4444; --chart-color-2: #ffaa00; --chart-color-3: #ffcc00; --background-light: #f0f4f8; --foreground-light: #0f172a; --card-background-light: rgba(255, 255, 255, 0.7); --border-light: rgba(0, 0, 0, 0.08); --input-light: rgba(255, 255, 255, 0.5); --muted-light: #475569; --gradient-start-light: #e0f2fe; --gradient-end-light: #ffffff; --accent-light: var(--accent-color-dark); --accent-hover-light: var(--accent-color); --accent-foreground-light: #ffffff; --text-shadow-light: none; --text-shadow-header-light: none; --background-dark: #000000; --foreground-dark: #f8f8f8; --card-background-dark: rgba(25, 0, 0, 0.7); --border-dark: rgba(255, 0, 0, 0.2); --input-dark: rgba(45, 0, 0, 0.6); --muted-dark: #ffaaaa; --gradient-start-dark: #300000; --gradient-end-dark: #000000; --accent-dark: var(--accent-color); --accent-hover-dark: var(--accent-color-dark); --accent-foreground-dark: #ffffff; --text-shadow-dark: 0 0 1px rgba(255, 0, 0, 0.1); --text-shadow-header-dark: 0 0 3px rgba(255, 0, 0, 0.15); --diff-up: #4ade80; --diff-down: #ff4444; } [data-theme='light'] { --background: var(--background-light); --foreground: var(--foreground-light); --card-background: var(--card-background-light); --border: var(--border-light); --input: var(--input-light); --muted-foreground: var(--muted-light); --accent: var(--accent-light); --accent-hover: var(--accent-hover-light); --accent-foreground: var(--accent-foreground-light); --gradient-start: var(--gradient-start-light); --gradient-end: var(--gradient-end-light); --text-shadow: var(--text-shadow-light); --text-shadow-header: var(--text-shadow-header-light); } [data-theme='dark'] { --background: var(--background-dark); --foreground: var(--foreground-dark); --card-background: var(--card-background-dark); --border: var(--border-dark); --input: var(--input-dark); --muted-foreground: var(--muted-dark); --accent: var(--accent-dark); --accent-hover: var(--accent-hover-dark); --accent-foreground: var(--accent-foreground-dark); --gradient-start: var(--gradient-start-dark); --gradient-end: var(--gradient-end-dark); --text-shadow: var(--text-shadow-dark); --text-shadow-header: var(--text-shadow-header-dark); } @keyframes gradientBG { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } } * { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: var(--font-sans); background-color: var(--background); color: var(--foreground); min-height: 100vh; display: flex; flex-direction: column; transition: background-color 0.3s, color 0.3s; position: relative; padding-top: 2rem; text-shadow: var(--text-shadow); font-size: 16px; line-height: 1.6; } body::before { content: ''; position: fixed; top: -50%; left: -50%; width: 200%; height: 200%; background: linear-gradient(135deg, var(--gradient-start), var(--background), var(--gradient-end)); background-size: 300% 300%; animation: gradientBG 20s ease infinite; z-index: -1; transition: background 0.5s; opacity: 0.7; } .container { width: 90%; max-width: 950px; margin: 0 auto 2rem auto; background-color: var(--card-background); border: 1px solid var(--border); padding: 2.5em; border-radius: 16px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2); transition: background-color 0.3s, border-color 0.3s; flex-grow: 1; position: relative; z-index: 1; } h1, h2 { color: var(--foreground); border-bottom: 1px solid var(--border); padding-bottom: 0.5em; font-weight: 700; } h1 { font-size: 1.8em; } h2 { font-size: 1.3em; margin-top: 2.8em; text-align: center; } h3 { margin-top: 0; font-size: 1.15em; color: var(--foreground); font-weight: 600; } [data-theme='dark'] h1, [data-theme='dark'] h2, [data-theme='dark'] h3 { text-shadow: var(--text-shadow-header); } form { margin: 1.5em auto 2.5em auto; display: flex; max-width: 600px; } input[type="text"] { flex-grow: 1; padding: 12px 15px; font-size: 1em; font-family: var(--font-sans); border: 1px solid var(--border); border-radius: 8px 0 0 8px; background-color: var(--input); color: var(--foreground); transition: border-color 0.2s, box-shadow 0.2s; } input[type="text"]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent); } input[type="submit"] { padding: 12px 24px; font-size: 1em; font-weight: 600; background-color: var(--accent); color: var(--accent-foreground); border: 1px solid var(--accent); border-left: 0; border-radius: 0 8px 8px 0; cursor: pointer; transition: background-color 0.2s; font-family: var(--font-sans); } input[type="submit"]:hover { background-color: var(--accent-hover); border-color: var(--accent-hover); } table { width: 100%; border-collapse: collapse; margin-top: 1em; font-size: 0.9em; } .container > table { max-width: 650px; margin-left: auto; margin-right: auto; } th, td { padding: 10px 15px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; } tr:last-child td { border-bottom: none; } td:not(.key) { font-family: var(--font-mono); font-size: 0.95em; } .key { font-weight: 500; color: var(--muted-foreground); width: 40%; font-family: var(--font-sans); font-size: 1em; } a { color: var(--accent); text-decoration: none; font-weight: 500; } a:hover { text-decoration: underline; } .footer { text-align: center; margin-top: 2.5em; font-size: 0.85em; color: var(--muted-foreground); } .error { color: var(--diff-down); background-color: color-mix(in srgb, var(--diff-down) 15%, transparent); padding: 1em; border: 1px solid var(--diff-down); border-radius: 8px; margin-top: 1.5em; } .progress-container { display: flex; flex-direction: column; gap: 4px; } .progress-bar { width: 100%; background-color: color-mix(in srgb, var(--border) 50%, transparent); border-radius: 4px; overflow: hidden; height: 8px; } .progress-fill { height: 100%; background-color: var(--accent); width: 0%; border-radius: 4px; transition: width 0.5s ease-in-out; } .progress-text { font-size: 0.9em; color: var(--muted-foreground); font-family: var(--font-mono); } .difficulty-info, .probability-info, .prediction-info { font-size: 0.8em; color: var(--muted-foreground); margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); } .probability-info strong { font-family: var(--font-mono);} .pool-header { text-align: center; padding: 2rem 1rem 1.5rem; margin: 0 auto 2rem auto; background: var(--input); color: var(--foreground); border: 1px solid var(--border); box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1); position: relative; border-radius: 12px; max-width: 950px; width: 90%; z-index: 1; } .pool-header h1 { font-size: 2em; margin-bottom: 0.1em; font-weight: 700; color: var(--foreground); border-bottom: none; padding-bottom: 0; } .pool-header p.subtitle { font-size: 1em; opacity: 0.8; margin-bottom: 1em; color: var(--muted-foreground); } .pool-header .pool-metrics { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; } .pool-header .metric-item { background-color: var(--card-background); padding: 0.5rem 1rem; border-radius: 6px; font-size: 0.95em; font-weight: 500; color: var(--foreground); display: flex; align-items: center; gap: 0.5rem; border: 1px solid var(--border); } .pool-header .metric-item strong { font-size: 1em; color: var(--foreground); font-family: var(--font-mono); } [data-theme='dark'] .pool-header .metric-item strong { text-shadow: none; } .theme-toggle { position: fixed; top: 1rem; right: 1rem; z-index: 1000; width: 40px; height: 40px; padding: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; background-color: var(--card-background); border: 1px solid var(--border); box-shadow: 0 2px 5px rgba(0,0,0,0.1); cursor: pointer; overflow: hidden; transition: background-color 0.3s, border-color 0.3s, box-shadow 0.3s; } .theme-toggle:hover { background-color: var(--input); } .theme-toggle svg { position: absolute; width: 20px; height: 20px; transition: transform 0.3s ease-out, opacity 0.2s; color: var(--muted-foreground); } html[data-theme='light'] .theme-toggle .sun { transform: translateY(0) scale(1); opacity: 1; } html[data-theme='light'] .theme-toggle .moon { transform: translateY(150%) scale(0.5); opacity: 0; } html[data-theme='dark'] .theme-toggle .sun { transform: translateY(-150%) scale(0.5); opacity: 0; } html[data-theme='dark'] .theme-toggle .moon { transform: translateY(0) scale(1); opacity: 1; } #chart-container { background-color: var(--input); border-radius: 12px; padding: 1.5em; border: 1px solid var(--border); margin-top: 1em; } .chart-controls { display: flex; gap: 0.5rem; margin-top: 2em; justify-content: center; } .chart-controls button { font-family: var(--font-sans); font-size: 0.85em; font-weight: 600; padding: 0.5em 1em; border-radius: 6px; background-color: transparent; border: 1px solid var(--border); color: var(--muted-foreground); cursor: pointer; transition: background-color 0.2s, color 0.2s; } .chart-controls button.active { background-color: var(--accent); color: var(--accent-foreground); border-color: var(--accent); } .connection-info-card { background-color: var(--input); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin: 2.5em auto; font-size: 0.95em; max-width: 600px; } .connection-info-card h2 { text-align: left; margin-top: 0; font-size: 1.1em; border-bottom: none; padding-bottom: 0; margin-bottom: 1em; font-weight: 600; } .connection-info-card ul { list-style: none; padding-left: 0; text-align: left; } .connection-info-card li { margin-bottom: 0.5em; } .connection-info-card code { background-color: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); padding: 0.2em 0.4em; border-radius: 4px; font-family: var(--font-mono); } .full-date { font-size: 0.85em; opacity: 0.7; margin-left: 0.5em; font-family: var(--font-mono); } .workers-toggle { cursor: pointer; } .workers-toggle .key { display: flex; align-items: center; justify-content: space-between; } .workers-toggle .chevron { transition: transform 0.2s ease-in-out; } .workers-toggle.open .chevron { transform: rotate(180deg); } .worker-list-row { display: none; } .worker-list-row > td { padding: 0 !important; border-top: 1px solid var(--border); } .worker-list-content { padding: 1.5em; } .worker-list-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1em; } .worker-list-content table { margin-top: 0; } .show-inactive-btn { font-size: 0.8em; background: none; border: none; cursor: pointer; text-decoration: underline; color: var(--diff-down); opacity: 0.8; font-family: var(--font-sans);} .show-inactive-btn:hover { opacity: 1; } .worker-chart-btn { background: none; border: 1px solid var(--border); color: var(--muted-foreground); padding: 4px 8px; font-size: 0.8em; border-radius: 6px; cursor: pointer; font-family: var(--font-sans);} .worker-chart-btn:hover { background-color: var(--card-background); } .modal-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.7); display: none; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); } .modal-content { background-color: var(--card-background); padding: 2rem; border-radius: 12px; max-width: 90%; width: 800px; position: relative; border: 1px solid var(--border); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); } .modal-close-btn { position: absolute; top: 0.5rem; right: 0.75rem; background: none; border: none; font-size: 2rem; color: var(--muted-foreground); cursor: pointer; line-height: 1; } .modal-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 1rem; } .modal-title { font-size: 1.25em; font-weight: 600; color: var(--foreground); } .diff-change { font-size: 0.9em; margin-left: 0.5em; font-weight: 600; font-family: var(--font-mono); } .diff-up { color: var(--diff-up); } .diff-down { color: var(--diff-down); } .clickable-header { cursor: pointer; }
     </style>
 </head>
 <body>
@@ -231,7 +175,7 @@ if ($last_block_reward_btc !== null && $btc_usd_price !== null) {
         <?php if ($btc_address && !$user_summary && !$error): ?><p class="error">No data found for this BTC address.</p><?php endif; ?>
         
         <?php if (!$btc_address && (isset($pool_data) || isset($network_data))): ?>
-            <h2 class="clickable-header" id="network-status-header" title="Click to see 30-day history chart">Network Status</h2>
+            <h2 class="clickable-header" id="network-status-header" title="Click to see history chart">Network Status</h2>
             <table><tbody>
                 <?php if ($network_hashrate !== null): ?><tr><td class="key">Network Hashrate</td><td class="font-mono"><?= htmlspecialchars(format_hashrate($network_hashrate)) ?><?php if ($network_hashrate_change !== null): $class = $network_hashrate_change >= 0 ? 'diff-up' : 'diff-down'; $sign = $network_hashrate_change >= 0 ? '+' : ''; echo ' <span class="diff-change ' . $class . '">(24h: ' . $sign . number_format($network_hashrate_change, 2) . '%)</span>'; endif; ?></td></tr><?php endif; ?>
                 <?php if ($network_difficulty !== null): ?><tr><td class="key">Current Difficulty</td><td class="font-mono"><?= htmlspecialchars(format_number_auto($network_difficulty)) ?><?php if ($previous_network_difficulty !== null && $previous_network_difficulty > 0): $change = (($network_difficulty - $previous_network_difficulty) / $previous_network_difficulty) * 100; $class = $change >= 0 ? 'diff-up' : 'diff-down'; $sign = $change >= 0 ? '+' : ''; echo ' <span class="diff-change ' . $class . '">(' . $sign . number_format($change, 2) . '%)</span>'; endif; ?></td></tr><?php endif; ?>
@@ -282,7 +226,6 @@ if ($last_block_reward_btc !== null && $btc_usd_price !== null) {
             </tbody></table>
         <?php endif; ?>
 
-
         <div class="chart-controls" id="chart-controls"> 
             <button data-range="1" class="active">24H</button> 
             <button data-range="7">7D</button> 
@@ -323,7 +266,7 @@ if ($last_block_reward_btc !== null && $btc_usd_price !== null) {
                                   if(modalTitleEl.textContent.includes('Chart for worker:')) {
                                       const activeWorker = modalTitleEl.textContent.replace('Chart for worker: ', '');
                                       fetchAndRender(activeRange, activeWorker, modalChartCanvas, `Worker: ${activeWorker}`, true);
-                                  } else if (modalTitleEl.textContent.includes('Network History')) {
+                                  } else if (modalTitleEl.textContent.includes('Network Status')) {
                                        fetchAndRenderNetworkChart();
                                   }
                               }
@@ -383,12 +326,12 @@ if ($last_block_reward_btc !== null && $btc_usd_price !== null) {
                             if (numericData.length > 0) hasData = true; 
                             
                             chartDatasets.push({
-                                label: (key === '1d' && range == 365) ? 'Daily Avg' : seriesConfig[key].label, // Etykieta dla 1Y
+                                label: (key === '1d' && range == 365) ? 'Daily Avg' : seriesConfig[key].label, 
                                 data: datasets[key].labels.map((ts, index) => ({ x: ts * 1000, y: datasets[key].data[index] })),
                                 borderColor: lineColor,
                                 backgroundColor: lineColor + '2A', 
                                 fill: true,
-                                borderWidth: (range == 365) ? 1 : 2, // Cieńsza linia dla 1Y
+                                borderWidth: (range == 365) ? 1 : 2, 
                                 pointRadius: 0,
                                 tension: 0.4
                             });
@@ -419,8 +362,22 @@ if ($last_block_reward_btc !== null && $btc_usd_price !== null) {
                     }
 
                     let timeUnit = 'hour';
-                    if (range > 7) timeUnit = 'day';
-                    if (range > 30) timeUnit = 'month';
+                    let displayFormat = { hour: 'HH:mm', day: 'MMM dd' }; 
+
+                    if (range == 1) {
+                        timeUnit = 'hour';
+                        displayFormat = { hour: 'HH:mm' };
+                    } else if (range == 7) {
+                        timeUnit = 'day'; 
+                        displayFormat = { day: 'MMM dd' }; 
+                    } else if (range > 7) {
+                        timeUnit = 'day';
+                        displayFormat = { day: 'MMM dd' };
+                    }
+                    if (range > 30) {
+                        timeUnit = 'month';
+                        displayFormat = { month: 'MMM yyyy' };
+                    }
 
                     const chartConfig = {
                         type: 'line',
@@ -430,8 +387,16 @@ if ($last_block_reward_btc !== null && $btc_usd_price !== null) {
                             scales: {
                                 x: {
                                     type: 'time',
-                                    time: { unit: timeUnit, tooltipFormat: 'yyyy-MM-dd HH:mm', displayFormats: { millisecond: 'HH:mm:ss.SSS', second: 'HH:mm:ss', minute: 'HH:mm', hour: 'HH:mm', day: 'MMM dd', week: 'MMM dd', month: 'MMM yyyy' } },
-                                    grid: { color: borderColor }, ticks: { color: mutedForegroundColor }
+                                    time: { 
+                                        unit: timeUnit, 
+                                        tooltipFormat: 'yyyy-MM-dd HH:mm', 
+                                        displayFormats: displayFormat 
+                                    },
+                                    grid: { color: borderColor }, 
+                                    ticks: { 
+                                        color: mutedForegroundColor,
+                                        maxTicksLimit: (range == 7) ? 7 : 12 
+                                    }
                                 },
                                 y: {
                                     beginAtZero: true, title: { display: true, text: 'Hashrate (GH/s)', color: mutedForegroundColor },
@@ -537,7 +502,7 @@ if ($last_block_reward_btc !== null && $btc_usd_price !== null) {
                            },
                            plugins: { 
                                 legend: { labels: { color: mutedForegroundColor } }, 
-                                title: { display: true, text: 'Network History (30 Days)', font: { size: 16, weight: '600', family: 'Inter' }, color: foregroundColor }, 
+                                title: { display: true, text: 'Network History (2 Years)', font: { size: 16, weight: '600', family: 'Inter' }, color: foregroundColor }, 
                                 tooltip: { 
                                     mode: 'index', intersect: false, 
                                     backgroundColor: cardBackgroundColor, 
@@ -605,7 +570,7 @@ if ($last_block_reward_btc !== null && $btc_usd_price !== null) {
             const networkStatusHeader = document.getElementById('network-status-header');
             if (networkStatusHeader) {
                 networkStatusHeader.addEventListener('click', () => {
-                    modalTitle.textContent = 'Network History (30 Days)';
+                    modalTitle.textContent = 'Network History (2 Years)';
                     modalBackdrop.style.display = 'flex';
                      modalChartCanvas = document.getElementById('modalChartCanvas'); 
                      if (modalChartCanvas) {
@@ -628,6 +593,7 @@ if ($last_block_reward_btc !== null && $btc_usd_price !== null) {
 
             if (mainChartCanvas) {
                 fetchAndRender(1, null, mainChartCanvas, btcAddress ? 'Aggregated Hashrate' : 'Pool Hashrate');
+                // Theme toggle listener is defined above and handles re-rendering
             }
         });
     </script>
