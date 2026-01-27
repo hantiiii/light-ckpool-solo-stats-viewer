@@ -1,5 +1,13 @@
 <?php
-// Ustawienia b??dów (w produkcji lepiej 0, ale do debugowania pomocne)
+// --- PERFORMANCE CONFIG ---
+// Cache'owanie w przegl?darce dla zapyta? JSON (wykresy) na 60 sekund
+// Dzi?ki temu przy od?wie?aniu strony przegl?darka nie m?czy bazy danych o histori? wykresów.
+if (isset($_GET['fetch_chart_data']) || isset($_GET['fetch_network_chart']) || isset($_GET['fetch_daily_chart'])) {
+    header('Content-Type: application/json');
+    header('Cache-Control: public, max-age=60'); 
+}
+
+// Ustawienia b??dów
 ini_set('display_errors', 0);
 error_reporting(E_ALL);
 
@@ -8,58 +16,105 @@ $dataDir = __DIR__ . '/data';
 $statsDbPath = $dataDir . '/stats.db';
 $networkDbPath = $dataDir . '/network.db';
 
-// --- API SECTION ---
+// --- DB CONNECTION HELPER (Singleton-ish) ---
+// Otwieramy po??czenie raz i ustawiamy tryb WAL dla wydajno?ci (nieblokuj?ce czytanie)
+function get_db_connection($path) {
+    if (!file_exists($path)) { return null; }
+    try {
+        $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_PERSISTENT => false]);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        // WAL Mode: Pozwala czyta? dane (strona WWW) w trakcie gdy parser je zapisuje. Kluczowe dla p?ynno?ci!
+        $pdo->exec("PRAGMA journal_mode = WAL");
+        $pdo->exec("PRAGMA synchronous = NORMAL");
+        return $pdo;
+    } catch (Exception $e) { return null; }
+}
+
+// Globalne po??czenia (reuse)
+$pdo_stats = get_db_connection($statsDbPath);
+$pdo_net = get_db_connection($networkDbPath);
+
+// --- API SECTION (JSON Responses) ---
 if (isset($_GET['fetch_chart_data']) || isset($_GET['fetch_network_chart']) || isset($_GET['fetch_daily_chart'])) { 
-    header('Content-Type: application/json'); 
     try { 
         $datasets = []; 
+        
+        // 1. Network Chart
         if (isset($_GET['fetch_network_chart'])) { 
-            if (!file_exists($networkDbPath)) { throw new Exception("Network database file not found."); } 
-            $pdo = new PDO('sqlite:' . $networkDbPath); 
+            if (!$pdo_net) throw new Exception("Network DB unavailable");
             $since = time() - (730 * 86400); 
             $query = "SELECT MIN(timestamp) as timestamp, AVG(network_hashrate_ghs) as network_hashrate_ghs, MAX(network_difficulty) as network_difficulty FROM network_history WHERE timestamp > :since GROUP BY (timestamp / 86400) ORDER BY timestamp ASC";
-            $stmt = $pdo->prepare($query); $stmt->execute([':since' => $since]); $results = $stmt->fetchAll(PDO::FETCH_ASSOC); 
+            $stmt = $pdo_net->prepare($query); $stmt->execute([':since' => $since]); $results = $stmt->fetchAll(PDO::FETCH_ASSOC); 
             $datasets['hashrate'] = ['labels' => [], 'data' => []]; $datasets['difficulty'] = ['labels' => [], 'data' => []]; 
             foreach ($results as $row) { $ts = $row['timestamp'] * 1000; $datasets['hashrate']['labels'][] = $ts; $datasets['hashrate']['data'][] = round($row['network_hashrate_ghs'], 2); $datasets['difficulty']['labels'][] = $ts; $datasets['difficulty']['data'][] = round($row['network_difficulty'], 2); } 
+        
+        // 2. Daily User/Pool Chart
         } elseif (isset($_GET['fetch_daily_chart'])) {
-            if (!file_exists($statsDbPath)) { throw new Exception("Stats database file not found."); } 
-            $pdo = new PDO('sqlite:' . $statsDbPath);
+            if (!$pdo_stats) throw new Exception("Stats DB unavailable");
             $btc_address = isset($_GET['btc_address']) ? trim(htmlspecialchars($_GET['btc_address'])) : null;
             $worker_name = isset($_GET['worker']) ? trim(htmlspecialchars($_GET['worker'])) : null;
             $range_days = isset($_GET['range']) ? (int)$_GET['range'] : 365;
             $since = time() - ($range_days * 86400);
             $params = [':since' => $since];
-            if ($btc_address) { $table = 'user_daily_history'; $where_clause = "WHERE date > :since AND btc_address = :btc_address AND worker_name = :worker_name "; $params[':btc_address'] = $btc_address; $params[':worker_name'] = $worker_name ?: AGGREGATE_WORKER_NAME; } else { $table = 'pool_daily_history'; $where_clause = "WHERE date > :since "; }
             
-            // Check if table exists to avoid 500 error in API
-            try { $pdo->query("SELECT 1 FROM $table LIMIT 1"); } catch (Exception $e) { throw new Exception("Table $table not initialized yet."); }
+            if ($btc_address) { 
+                $table = 'user_daily_history'; 
+                $where_clause = "WHERE date > :since AND btc_address = :btc_address AND worker_name = :worker_name "; 
+                $params[':btc_address'] = $btc_address; 
+                $params[':worker_name'] = $worker_name ?: AGGREGATE_WORKER_NAME; 
+            } else { 
+                $table = 'pool_daily_history'; 
+                $where_clause = "WHERE date > :since "; 
+            }
+            
+            // Check table existence efficiently
+            try { $pdo_stats->query("SELECT 1 FROM $table LIMIT 1"); } catch (Exception $e) { throw new Exception("Table $table not ready."); }
 
             $query = "SELECT date, avg_hashrate_ghs FROM {$table} {$where_clause} ORDER BY date ASC";
-            $stmt = $pdo->prepare($query); $stmt->execute($params); $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt = $pdo_stats->prepare($query); $stmt->execute($params); $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
             $datasets['1d'] = [ 'labels' => array_column($results, 'date'), 'data' => array_column($results, 'avg_hashrate_ghs'), ];
+        
+        // 3. Hourly/Minute Chart
         } else { 
-            if (!file_exists($statsDbPath)) { throw new Exception("Stats database file not found."); } 
-            $pdo = new PDO('sqlite:' . $statsDbPath); 
+            if (!$pdo_stats) throw new Exception("Stats DB unavailable");
             $btc_address = isset($_GET['btc_address']) ? trim(htmlspecialchars($_GET['btc_address'])) : null; 
             $worker_name = isset($_GET['worker']) ? trim(htmlspecialchars($_GET['worker'])) : null; 
             $range_days = isset($_GET['range']) ? (int)$_GET['range'] : 1; 
-            if ($range_days <= 1) { $table = $btc_address ? 'hashrate_history' : 'pool_history'; $col_time = 'timestamp'; $groupBy = "GROUP BY time_bucket"; $interval = 900; $series_map = ['5m' => 'hashrate_5m_ghs', '1h' => 'hashrate_1h_ghs']; } elseif ($range_days <= 7) { $table = $btc_address ? 'user_hourly_history' : 'pool_hourly_history'; $col_time = 'timestamp'; $groupBy = "GROUP BY time_bucket"; $interval = 3600; $series_map = ['1h' => 'avg_hashrate_ghs']; } else { $table = $btc_address ? 'user_daily_history' : 'pool_daily_history'; $col_time = 'date'; $groupBy = "GROUP BY time_bucket"; $interval = 86400; $series_map = ['1d' => 'avg_hashrate_ghs']; }
+            
+            if ($range_days <= 1) { 
+                $table = $btc_address ? 'hashrate_history' : 'pool_history'; // Uwaga: user hashrate_history nie istnieje w v66 schema, fallback to user_hourly
+                // Quick Fix: Skoro v66 nie tworzy hashrate_history dla usera (tylko hourly), u?yjmy hourly dla usera nawet przy 24h
+                if ($btc_address) {
+                     $table = 'user_hourly_history'; $col_time = 'time_bucket'; $groupBy = "GROUP BY time_bucket"; $interval = 3600; $series_map = ['1h' => 'avg_hashrate_ghs'];
+                } else {
+                     $table = 'pool_history'; $col_time = 'timestamp'; $groupBy = "GROUP BY time_bucket"; $interval = 900; $series_map = ['5m' => 'hashrate_5m_ghs', '1h' => 'hashrate_1h_ghs']; 
+                }
+            } elseif ($range_days <= 7) { 
+                $table = $btc_address ? 'user_hourly_history' : 'pool_hourly_history'; 
+                // Pool hourly history nie istnieje w v66 schema (tylko history), wi?c dla poola u?ywamy pool_history z groupingiem
+                if (!$btc_address) { $table = 'pool_history'; $interval = 3600; $col_time = 'timestamp'; $series_map = ['1h' => 'hashrate_1h_ghs']; }
+                else { $col_time = 'time_bucket'; $interval = 3600; $series_map = ['1h' => 'avg_hashrate_ghs']; }
+                $groupBy = "GROUP BY time_bucket"; 
+            } else { 
+                $table = $btc_address ? 'user_daily_history' : 'pool_daily_history'; 
+                $col_time = 'date'; $groupBy = "GROUP BY time_bucket"; $interval = 86400; $series_map = ['1d' => 'avg_hashrate_ghs']; 
+            }
+
             $since = time() - ($range_days * 86400); $params = [':since' => $since]; $where_clause = "WHERE $col_time > :since ";
             if ($btc_address) { $where_clause .= "AND btc_address = :btc_address AND worker_name = :worker_name "; $params[':btc_address'] = $btc_address; $params[':worker_name'] = $worker_name ?: AGGREGATE_WORKER_NAME; }
             
-            // Check table exists
-            try { $pdo->query("SELECT 1 FROM $table LIMIT 1"); } catch (Exception $e) { throw new Exception("Table $table not initialized yet."); }
+            try { $pdo_stats->query("SELECT 1 FROM $table LIMIT 1"); } catch (Exception $e) { throw new Exception("Table $table not ready."); }
 
-            $sql_selects = []; foreach ($series_map as $key => $column) { $actual_col = ($range_days > 1) ? 'avg_hashrate_ghs' : $column; $sql_selects[] = "AVG({$actual_col}) AS avg_{$key}"; }
+            $sql_selects = []; foreach ($series_map as $key => $column) { $actual_col = ($range_days > 1 || ($btc_address && $range_days <= 1)) ? 'avg_hashrate_ghs' : $column; $sql_selects[] = "AVG({$actual_col}) AS avg_{$key}"; }
             $query = "SELECT ($col_time / $interval) * $interval AS time_bucket, " . implode(', ', $sql_selects) . " FROM {$table} {$where_clause} {$groupBy} ORDER BY time_bucket ASC";
-            $stmt = $pdo->prepare($query); $stmt->execute($params); $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt = $pdo_stats->prepare($query); $stmt->execute($params); $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
             foreach ($series_map as $key => $column) { $datasets[$key] = [ 'labels' => array_column($results, 'time_bucket'), 'data' => array_column($results, "avg_{$key}"), ]; } 
         } 
     } catch (Exception $e) { $datasets = ['error' => $e->getMessage()]; } 
     echo json_encode($datasets); exit(); 
 }
 
-// --- DATA FETCHING ---
+// --- MAIN PAGE DATA FETCHING ---
 $pool_data = []; $user_summary = null; $user_workers = null; $last_update = null;
 $network_difficulty = null; $previous_network_difficulty = null; $network_hashrate = null;
 $last_block_reward_btc = null; $last_fetched_block_height = null; $btc_usd_price = null; 
@@ -72,8 +127,7 @@ $prediction_log_message = "H.A.N.T.I. Model ?";
 $accepted_30d = null; $rejected_30d = null; $rejected_percent_30d = null;
 
 try {
-    if (!file_exists($statsDbPath)) { throw new Exception("Stats database file not found. Please run parser.php script."); }
-    $pdo_stats = new PDO('sqlite:' . $statsDbPath); $pdo_stats->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION); 
+    if (!$pdo_stats) { throw new Exception("Stats DB not initialized. Run parser first."); }
     
     // 1. Current Pool Data
     $pool_row = $pdo_stats->query("SELECT data, last_update FROM pool_stats WHERE id = 1 LIMIT 1")->fetch(PDO::FETCH_ASSOC);
@@ -83,22 +137,19 @@ try {
     $last_block_reward_btc = $pool_data['last_block_reward_btc'] ?? null;
     $btc_usd_price = $pool_data['btc_usd_price'] ?? null; 
     
-    // 2. 30-Day Delta Logic (Safe)
+    // 2. 30-Day Delta Logic (Only if no BTC address selected to save performance)
     if (!$btc_address && isset($pool_data['accepted']) && isset($pool_data['rejected'])) {
         $curr_acc = (int)$pool_data['accepted']; $curr_rej = (int)$pool_data['rejected'];
         $time_30d_ago = time() - 2592000;
         
-        // Check columns exist
-        $cols_exist = false;
-        try { $test = $pdo_stats->query("SELECT accepted FROM pool_daily_history LIMIT 1"); $cols_exist = ($test !== false); } catch (Exception $e) { $cols_exist = false; }
-        
         $old_data = false;
-        if ($cols_exist) {
+        // Sprawdzamy czy tabela istnieje (cache'owanie istnienia tabeli w g?owie, tu proste try/catch)
+        try {
             $stmt_old = $pdo_stats->prepare("SELECT accepted, rejected FROM pool_daily_history WHERE date <= ? ORDER BY date DESC LIMIT 1");
             $stmt_old->execute([$time_30d_ago]);
             $old_data = $stmt_old->fetch(PDO::FETCH_ASSOC);
             if (!$old_data) { $stmt_oldest = $pdo_stats->query("SELECT accepted, rejected FROM pool_daily_history ORDER BY date ASC LIMIT 1"); $old_data = $stmt_oldest->fetch(PDO::FETCH_ASSOC); }
-        }
+        } catch (Exception $e) { /* Table empty or not exists */ }
         
         if ($old_data) {
             $old_acc = (int)$old_data['accepted']; $old_rej = (int)$old_data['rejected'];
@@ -112,33 +163,65 @@ try {
         }
     }
 
+    // 3. User Data Fetching
     if ($btc_address) {
         $user_stmt = $pdo_stats->prepare("SELECT data FROM user_stats WHERE btc_address = ?");
         $user_stmt->execute([$btc_address]);
         $user_row = $user_stmt->fetch(PDO::FETCH_ASSOC);
         $user_data_full = $user_row ? json_decode($user_row['data'], true) : null;
+        
+        if ($user_data_full) {
+            $user_summary = $user_data_full; 
+            if (isset($user_data_full['worker']) && is_array($user_data_full['worker'])) {
+                $user_workers = $user_data_full['worker'];
+                $user_workers_formatted = [];
+                foreach($user_workers as $w) {
+                    if (isset($w['workername'])) { $user_workers_formatted[$w['workername']] = $w; }
+                }
+                $user_workers = $user_workers_formatted;
+            } else { $user_workers = null; }
+        }
     }
     
-    if (file_exists($networkDbPath)) {
-        $pdo_net = new PDO('sqlite:' . $networkDbPath); $pdo_net->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION); 
-        $network_row = $pdo_net->query("SELECT data FROM network_stats WHERE id = 1 LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-        $network_data = $network_row ? json_decode($network_row['data'], true) : [];
-        $network_difficulty = $network_data['network_difficulty'] ?? null;
-        $previous_network_difficulty = $network_data['previous_network_difficulty'] ?? null;
-        $network_hashrate = $network_data['network_hashrate'] ?? null;
-        if ($btc_usd_price === null) { $btc_usd_price = $network_data['btc_usd_price'] ?? null; }
+    // 4. Network Data
+    if ($pdo_net) {
+        $network_row = $pdo_net->query("SELECT data FROM network_stats WHERE id = 1 LIMIT 1")->fetch(PDO::FETCH_ASSOC); // Old table check
+        // Je?li starej tabeli network_stats nie ma, bierzemy z prediction_data lub predykcji. 
+        // W v66 parserze nie ma tabeli 'network_stats', dane s? w pool_stats (btc_price) lub wyliczane.
+        
+        // Difficulty i Hashrate bierzemy z ostatniego wpisu w historii, bo jest naj?wie?szy
+        $hist_row = $pdo_net->query("SELECT network_hashrate_ghs, network_difficulty FROM network_history ORDER BY timestamp DESC LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        if ($hist_row) {
+            $network_difficulty = $hist_row['network_difficulty'];
+            $network_hashrate = $hist_row['network_hashrate_ghs'];
+        }
 
+        // Previous Diff (dla procentowej zmiany)
+        if ($network_difficulty) {
+            // Szukamy wpisu sprzed ~2 tygodni (przybli?enie epoki) lub po prostu poprzedniego zapisu ró?nego od obecnego?
+            // Pro?ciej: We?my wpis sprzed 24h dla delty
+            $prev_row = $pdo_net->prepare("SELECT network_difficulty FROM network_history WHERE timestamp < ? ORDER BY timestamp DESC LIMIT 1");
+            $prev_row->execute([time() - 86400]);
+            $previous_network_difficulty = $prev_row->fetchColumn();
+        }
+
+        // Predykcja
         $prediction_result = $pdo_net->query("SELECT * FROM prediction_data WHERE id = 1 LIMIT 1");
         $difficulty_prediction = $prediction_result ? $prediction_result->fetch(PDO::FETCH_ASSOC) : false;
-        if (!empty($difficulty_prediction['hybrid_factors_log'])) { $prediction_log_message = $difficulty_prediction['hybrid_factors_log']; }
-
+        
+        // 24h Change Hashrate
         $history_result = $pdo_net->query("SELECT network_hashrate_ghs FROM network_history WHERE timestamp >= " . (time() - 90000) . " ORDER BY timestamp ASC LIMIT 1");
-        if($history_result) { $old_hashrate = $history_result->fetchColumn(); if ($old_hashrate && $network_hashrate && $old_hashrate > 0) { $network_hashrate_change = (($network_hashrate - $old_hashrate) / $old_hashrate) * 100; } }
-    } else { $network_difficulty = null; $error = $error ? $error . " Network DB not found." : "Network DB not found."; }
+        if($history_result) { 
+            $old_hashrate = $history_result->fetchColumn(); 
+            if ($old_hashrate && $network_hashrate && $old_hashrate > 0) { 
+                $network_hashrate_change = (($network_hashrate - $old_hashrate) / $old_hashrate) * 100; 
+            } 
+        }
+    } else { $error = "Network DB not found."; }
 
-} catch (Exception $e) { $error = "Database Error: " . $e->getMessage(); }
+} catch (Exception $e) { $error = "Data Error: " . $e->getMessage(); }
 
-// --- HELPER FUNCTIONS ---
+// --- HELPER FUNCTIONS (Formatting) ---
 function format_seconds($seconds) { if ($seconds === null || $seconds < 1) return '0s'; $parts = []; $days = floor($seconds / 86400); if ($days > 0) $parts[] = $days . 'd'; $hours = floor(($seconds % 86400) / 3600); if ($hours > 0) $parts[] = $hours . 'h'; $minutes = floor(($seconds % 3600) / 60); if ($minutes > 0) $parts[] = $minutes . 'm'; $secs = $seconds % 60; if ($secs > 0 || empty($parts)) $parts[] = $secs . 's'; return implode(' ', $parts); } 
 function format_number_auto($number, $decimals = 2) { if ($number === null || !is_numeric($number)) return 'N/A'; if ($number == floor($number)) { return number_format($number, 0); } return number_format($number, $decimals); } 
 function format_metric_pl($number) { if ($number === null || !is_numeric($number)) return 'N/A'; if ($number >= 1000000000) { return number_format($number / 1000000000, 2, ',', ' ') . ' mld'; } elseif ($number >= 1000000) { return number_format($number / 1000000, 2, ',', ' ') . ' mln'; } elseif ($number >= 1000) { return number_format($number / 1000, 1, ',', ' ') . ' tys.'; } return number_format($number, 0, ',', ' '); }
@@ -149,7 +232,7 @@ function calculate_time_to_find_block($user_hashrate_ghs, $network_difficulty) {
 function format_long_time($seconds) { if ($seconds === null || $seconds <= 0) return "N/A"; $minutes = $seconds / 60; $hours = $minutes / 60; $days = $hours / 24; $months = $days / 30.44; $years = $days / 365.25; if ($years > 1) return format_number_auto($years) . " years"; if ($months > 1) return format_number_auto($months) . " months"; if ($days > 1) return format_number_auto($days) . " days"; return format_number_auto($hours) . " hours"; } 
 function format_share($num) { if ($num === null || !is_numeric($num)) return 'N/A'; if ($num < 1000000) return number_format($num); $units = ['K', 'M', 'G', 'T']; $power = floor(log($num, 1000)); return format_number_auto($num / pow(1000, $power), 2) . $units[$power - 1]; }
 
-// Replace Pool Data with 30-day stats if available (and adjust friendly names)
+// Replace Pool Data with 30-day stats if available
 if (!$btc_address && $accepted_30d !== null) {
     $pool_data['accepted'] = $accepted_30d;
     $pool_data['rejected'] = $rejected_30d;
@@ -157,13 +240,15 @@ if (!$btc_address && $accepted_30d !== null) {
     $friendly_names['accepted'] = 'Accepted (30d)';
     $friendly_names['rejected'] = 'Rejected (30d)';
 } else {
-    // Default names
     $friendly_names['accepted'] = 'Accepted';
     $friendly_names['rejected'] = 'Rejected';
 }
 
 $friendly_names = array_merge($friendly_names, [ 'hashrate1m' => 'Hashrate (1m)', 'hashrate5m' => 'Hashrate (5m)', 'hashrate1hr' => 'Hashrate (1h)', 'hashrate1d' => 'Hashrate (1d)', 'hashrate7d' => 'Hashrate (7d)', 'shares' => 'Shares', 'workers' => 'Workers', 'lastshare' => 'Last Share', 'bestshare' => 'Best Share', 'runtime' => 'Uptime', 'Users' => 'Users', 'Workers' => 'Workers', 'rejected_percent' => 'Rejected %', 'time_to_block' => 'Est. Time/Block' ]); 
-$script_path = '.'; $user_summary = $user_data_full['summary'] ?? null; $user_workers = $user_data_full['workers'] ?? null; if (empty($network_hashrate) && !empty($network_difficulty)) { $network_hashrate = $network_difficulty * pow(2, 32) / 600 / 1e9; } 
+$script_path = '.'; 
+$user_summary = $user_summary ?? null; 
+
+if (empty($network_hashrate) && !empty($network_difficulty)) { $network_hashrate = $network_difficulty * pow(2, 32) / 600 / 1e9; } 
 
 $analytics = null; 
 if ($user_summary && $network_hashrate) { 
@@ -215,31 +300,21 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
         
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: var(--font-sans); background: var(--bg); color: var(--text-main); line-height: 1.5; padding-bottom: 3rem; }
-        
-        /* Layout Grid */
         .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
         .full-width { grid-column: 1 / -1; }
-        
-        /* Cards */
         .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 12px rgba(0,0,0,0.05); transition: transform 0.2s, box-shadow 0.2s; }
         .kpi-card { display: flex; flex-direction: column; justify-content: space-between; height: 100%; }
         .kpi-title { font-size: 0.85rem; color: var(--text-muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
         .kpi-value { font-family: var(--font-mono); font-size: 1.6rem; font-weight: 700; color: var(--text-main); }
         .kpi-sub { font-size: 0.85rem; margin-top: 0.25rem; font-weight: 500; }
         .text-green { color: var(--accent); } .text-red { color: var(--danger); }
-        
-        /* Header */
         header { max-width: 1200px; margin: 0 auto; padding: 2rem 1rem 1rem; display: flex; justify-content: space-between; align-items: center; }
         .brand h1 { font-size: 1.5rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem; }
         .brand span { font-family: var(--font-mono); background: var(--accent); color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; }
         .subtitle { color: var(--text-muted); font-size: 0.9rem; margin-top: 0.25rem; }
-        
-        /* HANTI Section */
         .hanti-box { background: linear-gradient(145deg, var(--card-bg), rgba(35, 134, 54, 0.05)); border-left: 4px solid var(--accent); }
         .hanti-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
         .hanti-badge { font-family: var(--font-mono); font-size: 0.75rem; background: var(--border); padding: 2px 6px; border-radius: 4px; }
-        
-        /* Tables & Inputs */
         table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.9rem; }
         th, td { padding: 0.75rem 0; border-bottom: 1px solid var(--border); text-align: left; }
         th { color: var(--text-muted); font-weight: 500; }
@@ -247,19 +322,13 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
         tr:last-child td { border-bottom: none; }
         input[type="text"] { background: var(--bg); border: 1px solid var(--border); color: var(--text-main); padding: 0.6rem; border-radius: 6px 0 0 6px; width: 70%; font-family: var(--font-mono); }
         input[type="submit"] { background: var(--accent); border: 1px solid var(--accent); color: white; padding: 0.6rem 1.2rem; border-radius: 0 6px 6px 0; cursor: pointer; font-weight: 600; }
-        
-        /* Charts */
         .chart-wrapper { position: relative; height: 350px; width: 100%; margin-top: 1rem; }
         .chart-controls { display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1rem; }
         .chart-btn { background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
         .chart-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
-        
-        /* Utility */
         .diff-up { color: var(--accent); } .diff-down { color: var(--danger); }
         .theme-toggle { background: transparent; border: 1px solid var(--border); color: var(--text-main); width: 40px; height: 40px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; }
         .clickable { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 4px; }
-        
-        /* Modal */
         .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: none; align-items: center; justify-content: center; z-index: 999; backdrop-filter: blur(5px); }
         .modal-content { background: var(--card-bg); padding: 2rem; border-radius: 12px; width: 90%; max-width: 900px; border: 1px solid var(--border); }
         .close-btn { float: right; background: none; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer; }
