@@ -1,12 +1,19 @@
-# Database files
+# Database & Locks (SQLite)
 *.db
-*.db-journal
+*.db-wal
+*.db-shm
 
-# Data and state files
-stats.json
-parser.state
-data/
+# State & Temp Files
+parser_last_run.txt
+*.state
+*.log
+*.tmp
 
-# IDE configuration files
+# Data Directory (Ignore content but keep folder structure if needed)
+data/*
+!data/.gitkeep
+
+# IDE & System Files
 .vscode/
 .idea/
+.DS_Store

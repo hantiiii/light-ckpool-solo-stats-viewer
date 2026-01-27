@@ -1,5 +1,6 @@
 #!/usr/bin/php
 <?php
+// --- PARSER v80: OPTIMIZED (Lightweight for small pool.status) ---
 require_once __DIR__ . '/common.php';
 
 // --- CONFIGURATION ---
@@ -31,81 +32,61 @@ function parse_hashrate_to_ghs_local($hashrateStr) {
 
 function get_real_node_data() {
     $data = ['height' => 0, 'reward' => 0, 'price' => 0];
-    
-    // 1. Block Height
     $cliCount = run_bitcoin_cli('getblockcount');
-    
     if ($cliCount['error'] === null && is_numeric(trim($cliCount['output']))) {
         $data['height'] = (int)trim($cliCount['output']);
-        
-        // 2. Block Reward
         $statsCmd = "getblockstats {$data['height']} '[\"subsidy\",\"totalfee\"]'";
         $stats = run_bitcoin_cli($statsCmd);
         $statsData = json_decode($stats['output'] ?? '{}', true);
-
         if (isset($statsData['subsidy']) && isset($statsData['totalfee'])) {
-            $totalSats = $statsData['subsidy'] + $statsData['totalfee'];
-            $data['reward'] = $totalSats / 100000000;
+            $data['reward'] = ($statsData['subsidy'] + $statsData['totalfee']) / 100000000;
         } else {
-            $subsidy = 50;
-            $halvings = floor($data['height'] / 210000);
-            $data['reward'] = $subsidy / pow(2, $halvings); 
+            $data['reward'] = 50 / pow(2, floor($data['height'] / 210000)); 
         }
-    } else {
-        echo "WARNING: Local node unreachable (" . ($cliCount['error'] ?? 'Unknown') . ").\n";
     }
-
-    // 3. Price
     $json = api_fetch('https://api.kraken.com/0/public/Ticker?pair=XBTUSD');
     if ($json) {
         $d = json_decode($json, true);
-        if (isset($d['result']['XXBTZUSD']['c'][0])) {
-            $data['price'] = (float)$d['result']['XXBTZUSD']['c'][0];
-        }
+        if (isset($d['result']['XXBTZUSD']['c'][0])) { $data['price'] = (float)$d['result']['XXBTZUSD']['c'][0]; }
     }
-    
     return $data;
 }
 
 // --- DB INIT ---
 if (!is_dir($dataDir)) { mkdir($dataDir, 0775, true); }
-
 try {
     $pdo = new PDO('sqlite:' . $statsDbPath);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    
-    // WYŁĄCZAMY WAL (Powrót do kompatybilności z ROOTem)
-    // Dzięki temu nie powstają pliki root-only (.wal/.shm), które blokują stronę www.
-    $pdo->exec("PRAGMA journal_mode = DELETE"); 
+    $pdo->exec("PRAGMA journal_mode = DELETE"); // Bezpieczny tryb
     $pdo->exec("PRAGMA synchronous = NORMAL");
-
+    
     $pdo->exec("CREATE TABLE IF NOT EXISTS pool_stats (id INTEGER PRIMARY KEY, last_update INTEGER, data TEXT)");
     $pdo->exec("CREATE TABLE IF NOT EXISTS pool_history (timestamp INTEGER PRIMARY KEY, hashrate_1m_ghs REAL DEFAULT 0, hashrate_5m_ghs REAL DEFAULT 0, hashrate_1h_ghs REAL DEFAULT 0, shares INTEGER DEFAULT 0, users INTEGER DEFAULT 0, workers INTEGER DEFAULT 0, accepted INTEGER DEFAULT 0, rejected INTEGER DEFAULT 0)");
     $pdo->exec("CREATE TABLE IF NOT EXISTS pool_daily_history (date INTEGER PRIMARY KEY, avg_hashrate_ghs REAL, accepted INTEGER DEFAULT 0, rejected INTEGER DEFAULT 0)");
     $pdo->exec("CREATE TABLE IF NOT EXISTS user_stats (btc_address TEXT PRIMARY KEY, last_update INTEGER, data TEXT)");
     $pdo->exec("CREATE TABLE IF NOT EXISTS user_daily_history (date INTEGER, btc_address TEXT, worker_name TEXT, avg_hashrate_ghs REAL, PRIMARY KEY (date, btc_address, worker_name))");
     $pdo->exec("CREATE TABLE IF NOT EXISTS user_hourly_history (time_bucket INTEGER, btc_address TEXT, worker_name TEXT, avg_hashrate_ghs REAL, PRIMARY KEY (time_bucket, btc_address, worker_name))");
-
+    
+    // Auto-migracja kolumn
     $colsH = $pdo->query("PRAGMA table_info(pool_history)")->fetchAll(PDO::FETCH_COLUMN, 1);
     $reqH = ['hashrate_1m_ghs','hashrate_5m_ghs','hashrate_1h_ghs','shares','users','workers','accepted','rejected'];
     foreach($reqH as $c) { if(!in_array($c, $colsH)) $pdo->exec("ALTER TABLE pool_history ADD COLUMN $c NUMERIC DEFAULT 0"); }
-
 } catch (PDOException $e) { die("DB ERROR: " . $e->getMessage() . "\n"); }
 
 $now = time();
 $startTime = microtime(true);
 
-// --- 0. DANE RYNKOWE ---
+// --- 0. NODE DATA ---
 $nodeData = get_real_node_data();
-echo "NODE: Height {$nodeData['height']} | Reward {$nodeData['reward']} | Price \${$nodeData['price']}\n";
 
 // --- 1. POOL STATS ---
-$poolData = [ 'hashrate1m' => 0, 'hashrate5m' => 0, 'hashrate1hr' => 0, 'Users' => 0, 'Workers' => 0, 'accepted' => 0, 'rejected' => 0, 'shares' => 0 ];
+$poolData = [ 'hashrate1m' => 0, 'hashrate5m' => 0, 'hashrate1hr' => 0, 'Users' => 0, 'Workers' => 0, 'accepted' => 0, 'rejected' => 0, 'shares' => 0, 'bestshare' => 0 ];
 $poolData['last_fetched_block_height'] = $nodeData['height'];
 $poolData['last_block_reward_btc'] = $nodeData['reward'];
 $poolData['btc_usd_price'] = $nodeData['price'];
 
 if (file_exists($poolStatusFile)) {
+    // Plik jest mały (419 bajtów), czytamy normalnie
     $lines = file($poolStatusFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($lines as $line) {
         $json = json_decode($line, true);
@@ -120,8 +101,10 @@ if (file_exists($poolStatusFile)) {
             $poolData['accepted'] = $json['accepted']; 
             $poolData['rejected'] = $json['rejected']; 
             $poolData['shares'] = $json['accepted'] + $json['rejected'];
+            if (isset($json['bestshare'])) { $poolData['bestshare'] = $json['bestshare']; }
         }
     }
+    
     $total = $poolData['accepted'] + $poolData['rejected'];
     $poolData['rejected_percent'] = $total > 0 ? ($poolData['rejected'] / $total) * 100 : 0;
 
@@ -129,7 +112,8 @@ if (file_exists($poolStatusFile)) {
     $pdo->prepare("INSERT OR REPLACE INTO pool_stats (id, last_update, data) VALUES (1, ?, ?)")->execute([$now, json_encode($poolData)]);
     $stmt = $pdo->prepare("INSERT INTO pool_history (timestamp, hashrate_1m_ghs, hashrate_5m_ghs, hashrate_1h_ghs, shares, users, workers, accepted, rejected) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
     $stmt->execute([$now, $poolData['hashrate1m'], $poolData['hashrate5m'], $poolData['hashrate1hr'], $poolData['shares'], $poolData['Users'], $poolData['Workers'], $poolData['accepted'], $poolData['rejected']]);
-
+    
+    // Daily History
     $today = strtotime('today midnight');
     $stmtAvg = $pdo->prepare("SELECT avg_hashrate_ghs FROM pool_daily_history WHERE date = ?");
     $stmtAvg->execute([$today]);
@@ -137,11 +121,10 @@ if (file_exists($poolStatusFile)) {
     $newAvg = $oldAvg ? ($oldAvg + $poolData['hashrate1hr']) / 2 : $poolData['hashrate1hr'];
     $pdo->prepare("INSERT OR REPLACE INTO pool_daily_history (date, avg_hashrate_ghs, accepted, rejected) VALUES (?, ?, ?, ?)")->execute([$today, $newAvg, $poolData['accepted'], $poolData['rejected']]);
     $pdo->commit();
-
-    echo "POOL: OK. HR 1h: " . number_format($poolData['hashrate1hr'], 2) . " GH/s.\n";
+    echo "POOL: OK. HR: " . number_format($poolData['hashrate1hr'], 2) . " GH/s.\n";
 }
 
-// --- 2. USER STATS (INCREMENTAL) ---
+// --- 2. USER STATS ---
 $lastRunTime = 0;
 if (file_exists($lastRunFile)) { $lastRunTime = (int)file_get_contents($lastRunFile); }
 
@@ -154,11 +137,11 @@ if (is_dir($usersDir)) {
     $stmtInsertDaily = $pdo->prepare("INSERT OR REPLACE INTO user_daily_history (date, btc_address, worker_name, avg_hashrate_ghs) VALUES (?, ?, ?, ?)");
 
     $files = glob($usersDir . '*');
-    $processedCount = 0; $skippedCount = 0;
-
+    $processedCount = 0; 
+    
     $pdo->beginTransaction();
     foreach ($files as $file) {
-        if (filemtime($file) < $lastRunTime) { $skippedCount++; continue; }
+        if (filemtime($file) < $lastRunTime) continue; 
         $filename = basename($file);
         if ($filename == '.' || $filename == '..') continue;
         
@@ -195,24 +178,20 @@ if (is_dir($usersDir)) {
         }
     }
     $pdo->commit();
-    echo "USERS: Processed $processedCount. Skipped $skippedCount.\n";
+    echo "USERS: Processed $processedCount.\n";
 }
 
 file_put_contents($lastRunFile, time());
 $execTime = microtime(true) - $startTime;
 echo "DONE: Execution time: " . number_format($execTime, 3) . "s\n";
 
-// --- CLEANUP & PERMISSIONS (FIX DLA ROOT vs WEB1) ---
-// To jest najważniejsza część. Ponieważ skrypt chodzi jako ROOT, 
-// musimy na koniec oddać pliki użytkownikowi web1, żeby strona mogła je czytać.
-if (rand(1, 50) === 1) { $cutoff = time() - (30 * 86400); $pdo->prepare("DELETE FROM pool_history WHERE timestamp < ?")->execute([$cutoff]); }
+if (rand(1, 50) === 1) { 
+    $cutoff30d = time() - (30 * 86400); $pdo->prepare("DELETE FROM pool_history WHERE timestamp < ?")->execute([$cutoff30d]);
+    $cutoff60d = time() - (60 * 86400); $pdo->prepare("DELETE FROM user_hourly_history WHERE time_bucket < ?")->execute([$cutoff60d]);
+}
 
-// Zamknij połączenie przed chown
 $pdo = null;
-
-// Nadaj uprawnienia (naprawa po roocie)
 @chown($statsDbPath, $webUser); @chgrp($statsDbPath, $webGroup);
 @chown($lastRunFile, $webUser); @chgrp($lastRunFile, $webGroup);
-// Na wszelki wypadek katalog danych
 @chown($dataDir, $webUser); @chgrp($dataDir, $webGroup);
 ?>
