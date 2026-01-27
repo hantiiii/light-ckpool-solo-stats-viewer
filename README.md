@@ -30,7 +30,7 @@ This project provides real-time visualization of miner performance, network stat
 * **Frontend:** Vanilla JS + Chart.js 4.4
 * **System:** Designed for Linux environments (Debian/Ubuntu) running ckpool-dr.
 
-## ⚙️ Installation / Update
+## ⚙️ Installation
 
 1.  Clone the repository to your web directory.
 2.  Ensure PHP has write permissions to the `/data` folder:
@@ -44,12 +44,36 @@ This project provides real-time visualization of miner performance, network stat
     * * * * * /usr/bin/php /path/to/btcnode/prediction_parser.php >/dev/null 2>&1
     ```
 
-## ☕ Support development
+## 🔒 Nginx Configuration (Recommended)
 
+It is crucial to block access to the `/data` directory to prevent database downloads.
+
+```nginx
+server {
+    listen 80;
+    server_name your-node.com;
+    root /var/www/btcnode;
+    index index.php;
+
+    # SECURITY: Deny access to internal data and git files
+    location ~ ^/data/ { deny all; return 403; }
+    location ~ /\.git { deny all; return 403; }
+    location ~ \.(db|log|txt|state)$ { deny all; return 403; }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php7.4-fpm.sock; # Adjust PHP version if needed
+    }
+}
+```
+☕ Support development
 If you find this dashboard useful for your solo mining operation, consider supporting the development.
 
-**BTC Donation Address:**
-`1HANfVCfy9CFp5JAjNBhKWPWbavjXxdCRR`
+BTC Donation Address: 1HANfVCfy9CFp5JAjNBhKWPWbavjXxdCRR
 
+Powered by H.A.N.T.I. v7 Solaris Engine
 ---
-*Powered by H.A.N.T.I. v7 Solaris Engine*
