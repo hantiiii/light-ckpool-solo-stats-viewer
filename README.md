@@ -41,7 +41,7 @@ This project provides real-time visualization of miner performance, network stat
     chown -R www-data:www-data /path/to/btcnode/data
     chmod -R 775 /path/to/btcnode/data
     ```
-3.  Set up the cron job for the parsers (e.g., every minute):
+3.  Set up the cron job for the parsers (e.g., every 5min for parser, and 4h for prediction_parser):
     ``` cron
     * * * * * /usr/bin/php /path/to/btcnode/parser.php >/dev/null 2>&1
     * * * * * /usr/bin/php /path/to/btcnode/prediction_parser.php >/dev/null 2>&1
