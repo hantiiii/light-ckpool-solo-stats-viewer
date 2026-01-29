@@ -1,8 +1,10 @@
 <?php
 // --- CONFIGURATION ---
-// Wersja v89: HANTI v8 "Catalyst" - Branding Consistency Fix (Tooltip Name)
+// Version v96: Logic Fix - Emoticons now appear in Pool Stats too
 ini_set('display_errors', 0);
 error_reporting(E_ALL);
+// FORCE UTF-8
+header('Content-Type: text/html; charset=utf-8');
 
 if (isset($_GET['fetch_chart_data']) || isset($_GET['fetch_network_chart']) || isset($_GET['fetch_daily_chart'])) {
     header('Content-Type: application/json');
@@ -13,6 +15,30 @@ define('AGGREGATE_WORKER_NAME', '_AGGREGATE_');
 $dataDir = __DIR__ . '/data';
 $statsDbPath = $dataDir . '/stats.db';
 $networkDbPath = $dataDir . '/network.db';
+$quotesFile = __DIR__ . '/quotes.json';
+
+// --- QUOTES LOGIC ---
+$random_quote = "Tick tock, next block."; // Fallback
+if (file_exists($quotesFile)) {
+    $quotesData = json_decode(file_get_contents($quotesFile), true);
+    if ($quotesData && is_array($quotesData)) {
+        $random_quote = $quotesData[array_rand($quotesData)];
+    }
+}
+
+// --- SVG ICONS HELPER ---
+function get_svg_icon($name) {
+    // Optimized SVGs for performance
+    switch($name) {
+        case 'sad': return '<svg viewBox="0 0 24 24" fill="#8b949e"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm4-11a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm-8 0a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm4 9c-2.33 0-4.31-1.46-5.11-3.5h10.22c-.8 2.04-2.78 3.5-5.11 3.5z"/></svg>';
+        case 'thinking': return '<svg viewBox="0 0 24 24" fill="#a371f7"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-4h2v2h-2v-2zm1.61-9.96c-2.06-.3-3.88.97-4.43 2.79-.18.58.26.96.8.96H9c.34 0 .65-.2.74-.53.18-.7.73-1.16 1.41-1.07.69.09 1.15.7 1.02 1.4-.15.82-.94 1.22-1.39 1.76-.66.8-1.03 1.5-1.03 2.65h2.5c0-.6.4-1 .85-1.46.6-.62 1.5-1.2 1.77-2.3.43-1.74-.75-3.66-2.26-4.15z"/></svg>'; 
+        case 'smile': return '<svg viewBox="0 0 24 24" fill="#e3b341"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm4-11a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm-8 0a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm4 8.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg>';
+        case 'rocket': return '<svg viewBox="0 0 24 24" fill="#238636"><path d="M13.13 22.19l-1.63-3.83c1.57-.58 3.04-1.36 4.4-2.27l-2.77 6.1zM5.64 12.51c-.14.75-.22 1.52-.22 2.31 0 1.84.44 3.56 1.22 5.09l-3.37-7.4zm1.72-2.15l2.4 1.34c-.11-.27-.2-.55-.28-.83-.3-.99-.36-2.02-.19-3.02l-1.93 2.51zm9.95 2.15l1.93-2.51c.17 1 .11 2.03-.19 3.02-.08.28-.17.56-.28.83l2.4-1.34zM12 2C9.5 2 7.2 3.3 6 5.5c2.5 1.5 4 4.5 4 7.5s-1.5 6-4 7.5c1.2 2.2 3.5 3.5 6 3.5s4.8-1.3 6-3.5c-2.5-1.5-4-4.5-4-7.5s1.5-6 4-7.5C16.8 3.3 14.5 2 12 2z"/></svg>';
+        case 'fire': return '<svg viewBox="0 0 24 24" fill="#da3633"><path d="M19.48 13.03A9.352 9.352 0 0112 19.5c-3.1 0-5.83-1.5-7.54-3.81.42 2.5 2.06 4.67 4.35 5.86-2.01-.43-3.77-1.56-5.05-3.03 1.28 3.73 4.84 6.48 9.07 6.48 5.3 0 9.6-4.3 9.6-9.6 0-.89-.12-1.75-.35-2.57-.45.75-.98 1.48-1.6 2.2zM12 2C8 2 6 7 6 7s1.5-1 3-1c0 0-2 4 1 5 .2-.9.5-1.7 1-2.5.5.8.8 1.6 1 2.5 3-1 1-5 1-5s1.5 1 3 1c0 0-2-5-6-5z"/></svg>';
+        case 'trophy': return '<svg viewBox="0 0 24 24" fill="#ffd700"><path d="M20.2 6.5h-2.3c.3-1 .5-2.1.5-3.3 0-.6-.4-1-1-1H6.6c-.6 0-1 .4-1 1 0 1.2.2 2.3.5 3.3H3.8c-1 0-1.8.8-1.8 1.8v2.3c0 3.3 2.5 6 5.7 6.4 1.3 1.8 3.1 3 5.3 3.3v2.1H9.8c-.6 0-1 .4-1 1s.4 1 1 1h4.4c.6 0 1-.4 1-1s-.4-1-1-1h-3.2v-2.1c2.2-.3 4-1.5 5.3-3.3 3.2-.4 5.7-3.1 5.7-6.4V8.3c0-1-.8-1.8-1.8-1.8zM7.1 4.2h9.8c-.2 1.3-.6 2.5-1.1 3.6l-1.9-.9c.4-.9.7-1.8.8-2.7H9.3c.1.9.4 1.8.8 2.7l-1.9.9c-.5-1.1-.9-2.3-1.1-3.6zM5.8 12.1V8.5h2.1c-.2 1.1-.2 2.2-.2 3.3 0 .7 0 1.3.1 2 .1 0 .2.1.3.1-1.3-.2-2.3-1.3-2.3-1.8zm12.4 0c0 .5-1 1.6-2.3 1.8.1 0 .2-.1.3-.1.1-.7.1-1.3.1-2 0-1.1-.1-2.2-.2-3.3h2.1v3.6z"/></svg>';
+    }
+    return '';
+}
 
 // --- API SECTION ---
 if (isset($_GET['fetch_chart_data']) || isset($_GET['fetch_network_chart']) || isset($_GET['fetch_daily_chart'])) { 
@@ -81,13 +107,20 @@ try {
     $pool_data = $pool_row ? json_decode($pool_row['data'], true) : [];
     $last_update = $pool_row['last_update'] ?? null;
     
+    if (!$btc_address && $pool_data) {
+        $today = strtotime('today midnight');
+        $stmt1d = $pdo_stats->prepare("SELECT avg_hashrate_ghs FROM pool_daily_history WHERE date = ? LIMIT 1");
+        $stmt1d->execute([$today]);
+        $hr1d = $stmt1d->fetchColumn();
+        if ($hr1d) { $pool_data['hashrate1d'] = $hr1d; }
+    }
+
     if ($pool_data) {
         $last_fetched_block_height = $pool_data['last_fetched_block_height'] ?? null; 
         $last_block_reward_btc = $pool_data['last_block_reward_btc'] ?? null;
         $btc_usd_price = $pool_data['btc_usd_price'] ?? null; 
     }
     
-    // 30-Day Logic
     if (!$btc_address && isset($pool_data['accepted']) && isset($pool_data['rejected'])) {
         $curr_acc = (float)$pool_data['accepted']; $curr_rej = (float)$pool_data['rejected'];
         $time_30d_ago = time() - 2592000;
@@ -159,7 +192,7 @@ if (empty($network_hashrate) && !empty($network_difficulty)) { $network_hashrate
 $analytics = null; if ($user_summary && $network_hashrate) { $user_hashrate_str = $user_summary['hashrate1hr'] ?? '0'; $user_hashrate_ghs = parse_hashrate_to_ghs($user_hashrate_str); $time_to_find_val = calculate_time_to_find_block($user_hashrate_ghs, $network_difficulty); $analytics = [ 'prob_month' => calculate_block_probability($user_hashrate_ghs, $network_hashrate, 30.44), 'prob_year' => calculate_block_probability($user_hashrate_ghs, $network_hashrate, 365.25), 'time_to_find' => $time_to_find_val ]; } 
 $pool_time_to_block = null; if ($pool_data && $network_difficulty) { $pool_hashrate_str = $pool_data['hashrate1hr'] ?? '0'; $pool_hashrate_ghs = parse_hashrate_to_ghs($pool_hashrate_str); $pool_time_to_block = calculate_time_to_find_block($pool_hashrate_ghs, $network_difficulty); } 
 $estimated_adjustment_date = null; if ($difficulty_prediction && isset($difficulty_prediction['estimated_timestamp']) && $difficulty_prediction['estimated_timestamp'] > 0) { $estimated_adjustment_date = date('Y-m-d H:i', (int)$difficulty_prediction['estimated_timestamp']); }
-$pool_title = "srv.88x.pl"; $pool_subtitle = "H.A.N.T.I. v7 Solaris & CKPool Node"; $current_pool_hashrate_1h = $pool_data['hashrate1hr'] ?? '0'; $current_pool_users = $pool_data['Users'] ?? '0'; $current_pool_workers = $pool_data['Workers'] ?? '0';
+$pool_title = "srv.88x.pl"; $pool_subtitle = "H.A.N.T.I. v8 \"Catalyst\""; $current_pool_hashrate_1h = $pool_data['hashrate1hr'] ?? '0'; $current_pool_users = $pool_data['Users'] ?? '0'; $current_pool_workers = $pool_data['Workers'] ?? '0';
 $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_price !== null) { $last_block_reward_usd = $last_block_reward_btc * $btc_usd_price; }
 ?>
 <!DOCTYPE html>
@@ -206,18 +239,30 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
         .chart-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
         .diff-up { color: var(--accent); } .diff-down { color: var(--danger); }
         .theme-toggle { background: transparent; border: 1px solid var(--border); color: var(--text-main); width: 40px; height: 40px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        .theme-toggle svg { width: 20px; height: 20px; fill: currentColor; }
         .clickable { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 4px; }
         .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: none; align-items: center; justify-content: center; z-index: 999; backdrop-filter: blur(5px); }
         .modal-content { background: var(--card-bg); padding: 2rem; border-radius: 12px; width: 90%; max-width: 900px; border: 1px solid var(--border); }
         .close-btn { float: right; background: none; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer; }
         .footer { font-size: 0.75rem; color: var(--text-muted); margin-top: 1rem; opacity: 0.8; }
+        .quote-box { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); text-align: center; color: var(--text-muted); font-style: italic; font-size: 0.85rem; opacity: 0.7; }
+        .quote-label { font-size: 0.7rem; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; display: block; margin-bottom: 4px; opacity: 0.5; }
+        .confetti { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 9999; overflow: hidden; display: none; }
+        .confetti-piece { position: absolute; width: 10px; height: 10px; background: #ffd700; top: -10px; opacity: 0; }
+        
+        /* New Emote Styles for SVG */
+        .emote { display: inline-block; vertical-align: middle; margin-left: 6px; }
+        .emote svg { width: 1.2em; height: 1.2em; vertical-align: -0.25em; display: block; }
+        
+        @keyframes confetti-fall { 0% { transform: translateY(0) rotate(0deg); opacity: 1; } 100% { transform: translateY(100vh) rotate(720deg); opacity: 0; } }
     </style>
 </head>
 <body>
+<div class="confetti" id="confetti-container"></div>
 
 <header>
-    <div class="brand"><h1>srv.88x.pl <span>NODE</span></h1><div class="subtitle">Solo Mining Intelligence • H.A.N.T.I. v8 "Catalyst"</div></div>
-    <button class="theme-toggle" id="theme-toggle">?</button>
+    <div class="brand"><h1>srv.88x.pl <span>NODE</span></h1><div class="subtitle">Solo Mining Intelligence â€¢ H.A.N.T.I. v8 "Catalyst"</div></div>
+    <button class="theme-toggle" id="theme-toggle" title="Switch Theme"></button>
 </header>
 
 <div class="dashboard-grid">
@@ -228,21 +273,18 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
     <?php if (!$btc_address && (isset($pool_data) || isset($network_data))): ?>
     <div class="card kpi-card"><div><div class="kpi-title">Network Hashrate</div><div class="kpi-value"><?= htmlspecialchars(format_hashrate($network_hashrate)) ?></div><?php if ($network_hashrate_change !== null): $class = $network_hashrate_change >= 0 ? 'text-green' : 'text-red'; $sign = $network_hashrate_change >= 0 ? '+' : ''; echo '<div class="kpi-sub '.$class.'">24h Change: '.$sign.number_format($network_hashrate_change, 2).'%</div>'; endif; ?></div><div class="kpi-sub clickable" id="network-status-header">View History Chart</div></div>
     <?php 
-    // HANTI Card with Dynamic Background
+    // HANTI Card
     $progVal = ($difficulty_prediction && isset($difficulty_prediction['progress'])) ? floatval($difficulty_prediction['progress']) : 0;
     $progVal = max(0, min(100, $progVal));
     $hantiStyle = "background-image: linear-gradient(90deg, rgba(35, 134, 54, 0.15) {$progVal}%, transparent {$progVal}%);";
-    
-    // Fee Pressure Calculation (v8 Feature)
     $fee_tooltip_extra = "";
     if ($last_block_reward_btc > 0) {
-        $base_subsidy = 3.125; // Current Era
-        $fees = max(0, $last_block_reward_btc - $base_subsidy);
+        $base_subsidy = 3.125; $fees = max(0, $last_block_reward_btc - $base_subsidy);
         $fee_percent = ($fees / $last_block_reward_btc) * 100;
         $fee_tooltip_extra = " + Fee Pressure (" . number_format($fee_percent, 1) . "%)";
     }
     ?>
-    <div class="card kpi-card hanti-box" style="<?= $hantiStyle ?>"><div><div class="hanti-header"><div class="kpi-title">Difficulty Prediction</div><div class="hanti-badge" title="H.A.N.T.I. v8 Catalyst: ? Diff = ?(Block Time × Hashrate) × Catalyst(BTC Price<?= $fee_tooltip_extra ?>).">HANTI v8</div></div><?php if ($difficulty_prediction && isset($difficulty_prediction['prediction'])): $pred = $difficulty_prediction['prediction']; $p_class = $pred >= 0 ? 'text-green' : 'text-red'; $p_sign = $pred >= 0 ? '+' : ''; ?><div class="kpi-value <?= $p_class ?>"><?= $p_sign . number_format($pred, 2) ?>%</div><div class="kpi-sub">Progress: <?= $difficulty_prediction['progress'] ?>% <br>Est: <?= $estimated_adjustment_date ?></div><?php else: ?><div class="kpi-value">Calc...</div><?php endif; ?></div></div>
+    <div class="card kpi-card hanti-box" style="<?= $hantiStyle ?>"><div><div class="hanti-header"><div class="kpi-title">Difficulty Prediction</div><div class="hanti-badge" title="H.A.N.T.I. v8 Catalyst: Î” Diff = âˆ«(Block Time Ã— Hashrate) Ã— Catalyst(BTC Price<?= $fee_tooltip_extra ?>).">HANTI v8</div></div><?php if ($difficulty_prediction && isset($difficulty_prediction['prediction'])): $pred = $difficulty_prediction['prediction']; $p_class = $pred >= 0 ? 'text-green' : 'text-red'; $p_sign = $pred >= 0 ? '+' : ''; ?><div class="kpi-value <?= $p_class ?>"><?= $p_sign . number_format($pred, 2) ?>%</div><div class="kpi-sub">Progress: <?= $difficulty_prediction['progress'] ?>% <br>Est: <?= $estimated_adjustment_date ?></div><?php else: ?><div class="kpi-value">Calc...</div><?php endif; ?></div></div>
     <div class="card kpi-card"><div><div class="kpi-title">Current Difficulty</div><div class="kpi-value" style="font-size: 1.4rem;"><?= htmlspecialchars(format_number_auto($network_difficulty)) ?></div><?php if ($previous_network_difficulty): $diff_chg = (($network_difficulty - $previous_network_difficulty)/$previous_network_difficulty)*100; $d_class = $diff_chg >= 0 ? 'text-green' : 'text-red'; echo '<div class="kpi-sub '.$d_class.'">Prev: '.($diff_chg>=0?'+':'').number_format($diff_chg, 2).'%</div>'; endif; ?></div></div>
     <div class="card kpi-card"><div><div class="kpi-title">Block Reward</div><div class="kpi-value text-green">$<?= $last_block_reward_usd ? number_format($last_block_reward_usd, 0, '.', ',') : '---' ?></div><div class="kpi-sub"><?= number_format($last_block_reward_btc, 6) ?> BTC</div>
     <div class="kpi-sub" style="font-size: 0.75rem; opacity: 0.7;">Block #<?= number_format($last_fetched_block_height) ?></div>
@@ -271,6 +313,14 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
             <?php endif; ?>
             </div>
         <?php endif; ?>
+        
+        <?php if ($random_quote): ?>
+        <div class="quote-box">
+            <span class="quote-label">Miner's Wisdom</span>
+            "<?= htmlspecialchars($random_quote) ?>"
+        </div>
+        <?php endif; ?>
+        
         <?php if ($last_update): ?> <p class="footer">Last updated: <span class="time-ago" data-timestamp="<?= $last_update ?>">...</span></p> <?php endif; ?>
     </div>
 </div>
@@ -278,12 +328,46 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
 <div id="modal-backdrop" class="modal-backdrop"><div class="modal-content"><button id="modal-close-btn" class="close-btn">&times;</button><h2 id="modal-title" style="margin-bottom:1rem;">Chart</h2><div style="height:400px; width:100%;"><canvas id="modalChartCanvas"></canvas></div></div></div>
 
 <script>
+    function startConfetti() {
+        const container = document.getElementById('confetti-container');
+        container.style.display = 'block';
+        const colors = ['#ff0', '#f00', '#0f0', '#00f', '#0ff', '#f0f'];
+        for(let i=0; i<100; i++) {
+            const piece = document.createElement('div');
+            piece.classList.add('confetti-piece');
+            piece.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+            piece.style.left = Math.random() * 100 + 'vw';
+            piece.style.animationDuration = (Math.random() * 3 + 2) + 's';
+            piece.style.animationName = 'confetti-fall';
+            container.appendChild(piece);
+        }
+        setTimeout(() => { container.innerHTML = ''; container.style.display = 'none'; }, 5000);
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
         const timeAgo = (timestamp) => { const now = new Date(); const past = new Date(timestamp * 1000); const seconds = Math.floor((now - past) / 1000); if (seconds < 60) return `${seconds}s ago`; const minutes = Math.floor(seconds / 60); if (minutes < 60) return `${minutes}m ago`; const hours = Math.floor(minutes / 60); if (hours < 24) return `${hours}h ago`; const days = Math.floor(hours / 24); return `${days}d ago`; };
         document.querySelectorAll('.time-ago').forEach(el => { const ts = parseInt(el.dataset.timestamp); if(!isNaN(ts)) el.innerText = timeAgo(ts); });
 
         const themeToggle = document.getElementById('theme-toggle');
-        themeToggle.addEventListener('click', () => { const newTheme = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light'; document.documentElement.setAttribute('data-theme', newTheme); localStorage.setItem('theme', newTheme); location.reload(); });
+        
+        // Dynamic Icon Logic with SVG
+        const sunSvg = '<svg viewBox="0 0 24 24"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0a.996.996 0 000-1.41l-1.06-1.06zm1.06-10.96a.996.996 0 000-1.41.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36a.996.996 0 000 1.41.996.996 0 001.41 0l1.06-1.06c.39-.39.39-1.03 0-1.41s-1.03-.39-1.41 0l-1.06 1.06z"></path></svg>';
+        const moonSvg = '<svg viewBox="0 0 24 24"><path d="M9.37 5.51A7.35 7.35 0 009.1 7.5c0 4.08 3.32 7.4 7.4 7.4.68 0 1.35-.09 1.99-.27A7.014 7.014 0 0112 19c-3.86 0-7-3.14-7-7 0-2.93 1.81-5.45 4.37-6.49zM12 3a9 9 0 109 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 01-4.4 2.26 5.403 5.403 0 01-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"></path></svg>';
+
+        const updateThemeIcon = (theme) => {
+            themeToggle.innerHTML = theme === 'light' ? moonSvg : sunSvg;
+        };
+
+        const currentTheme = document.documentElement.getAttribute('data-theme');
+        updateThemeIcon(currentTheme);
+
+        themeToggle.addEventListener('click', () => { 
+            const newTheme = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light'; 
+            document.documentElement.setAttribute('data-theme', newTheme); 
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        });
+
         document.addEventListener('click', (e) => { if(e.target.closest('.workers-toggle')) { const row = document.getElementById('worker-list-row'); row.style.display = row.style.display === 'none' ? 'table-row' : 'none'; } });
 
         const mainCanvas = document.getElementById('hashrateChart');
@@ -351,8 +435,11 @@ function render_table($data, $key_order, $friendly_names, $network_difficulty, $
         if ($key === 'rejected_percent') { 
             if (isset($data['accepted'], $data['rejected']) && ($data['accepted'] + $data['rejected']) > 0) { 
                 $total = $data['accepted'] + $data['rejected']; $percent = ($data['rejected'] / $total) * 100; 
-                $label = $friendly_names[$key] ?? 'Rejected %'; $value = format_number_auto($percent, 2) . ' %'; 
-                echo '<tr><td class="key">' . htmlspecialchars($label) . '</td><td class="font-mono">' . htmlspecialchars($value) . '</td></tr>'; 
+                $label = $friendly_names[$key] ?? 'Rejected %'; 
+                $color = 'var(--accent)'; // Green
+                if ($percent > 1.0) $color = 'var(--danger)'; // Red
+                elseif ($percent > 0.5) $color = '#d29922'; // Orange
+                echo '<tr><td class="key">' . htmlspecialchars($label) . '</td><td class="font-mono" style="color:'.$color.'">' . format_number_auto($percent, 2) . ' %</td></tr>'; 
             } continue; 
         } 
         if ($key === 'time_to_block' && $pool_time_to_block) { echo '<tr><td class="key">' . ($friendly_names[$key] ?? 'Est. Time/Block') . '</td><td class="font-mono">' . htmlspecialchars(format_long_time($pool_time_to_block)) . '</td></tr>'; continue; } 
@@ -360,14 +447,37 @@ function render_table($data, $key_order, $friendly_names, $network_difficulty, $
             $label = $friendly_names[$key] ?? ucfirst($key); $value = $data[$key]; 
             echo '<tr><td class="key">' . htmlspecialchars($label) . '</td><td class="font-mono">'; 
             if ($key === 'bestshare' && $workers_data !== null && $network_difficulty !== null && $network_difficulty > 0) { 
-                $percentage = ($value / $network_difficulty) * 100; $percentage_capped = min(100, $percentage); 
+                $percentage = ($value / $network_difficulty) * 100; 
+                $emote = '';
+                if ($percentage < 0.1) $emote = get_svg_icon('sad');
+                elseif ($percentage < 1) $emote = get_svg_icon('thinking');
+                elseif ($percentage < 10) $emote = get_svg_icon('smile');
+                elseif ($percentage < 50) $emote = get_svg_icon('rocket');
+                elseif ($percentage < 100) $emote = get_svg_icon('fire');
+                else { $emote = get_svg_icon('trophy'); echo '<script>startConfetti();</script>'; }
+
+                $percentage_capped = min(100, $percentage); 
                 $diff_change_html = ''; 
                 if ($previous_difficulty !== null && $previous_difficulty > 0) { $change = (($network_difficulty - $previous_difficulty) / $previous_difficulty) * 100; $class = $change >= 0 ? 'diff-up' : 'diff-down'; $sign = $change >= 0 ? '+' : ''; $diff_change_html = ' <span class="diff-change ' . $class . '">(' . $sign . number_format($change, 2) . '%)</span>'; } 
-                echo '<div class="progress-container"><span class="progress-text">' . htmlspecialchars(format_number_auto($value)) . ' (' . number_format($percentage, 4) . '%)</span><div class="progress-bar"><div class="progress-fill" style="width: ' . $percentage_capped . '%;"></div></div><div class="difficulty-info">Network Difficulty: ' . htmlspecialchars(format_number_auto($network_difficulty)) . $diff_change_html . '</div>'; 
+                echo '<div class="progress-container"><span class="progress-text">' . htmlspecialchars(format_number_auto($value)) . ' (' . number_format($percentage, 4) . '%) <span class="emote">'.$emote.'</span></span><div class="progress-bar"><div class="progress-fill" style="width: ' . $percentage_capped . '%;"></div></div><div class="difficulty-info">Network Difficulty: ' . htmlspecialchars(format_number_auto($network_difficulty)) . $diff_change_html . '</div>'; 
                 if ($difficulty_prediction) { echo '<div class="prediction-info">Next adjustment progress: <strong>' . ($difficulty_prediction['progress'] ?? 'N/A') . '%</strong>.<br>'; if (isset($difficulty_prediction['prediction'])) { $pred_val = $difficulty_prediction['prediction']; $pred_class = $pred_val >= 0 ? 'diff-up' : 'diff-down'; $pred_sign = $pred_val >= 0 ? '+' : ''; echo 'Estimated change: <strong class="' . $pred_class . '">' . $pred_sign . $pred_val . '%</strong>'; } if ($estimated_adjustment_date) { echo ' (Est. <strong class="font-mono">' . $estimated_adjustment_date . '</strong>)'; } echo '</div>'; } 
                 if ($analytics) { echo '<div class="probability-info">Based on your 1h hashrate:<br>Avg. time to find a block: <strong>' . format_long_time($analytics['time_to_find']) . '</strong><br>Est. probability: <strong>' . number_format($analytics['prob_month'], 6) . '%</strong>/month, <strong>' . number_format($analytics['prob_year'], 4) . '%</strong>/year.</div>'; } 
                 echo '</div>'; 
-            } elseif ($key === 'bestshare') { echo htmlspecialchars(format_share($value)); if ($network_difficulty !== null && $network_difficulty > 0) { $percent = ($value / $network_difficulty) * 100; echo ' <span class="full-date">(' . number_format($percent, 4) . '%)</span>'; } } 
+            } elseif ($key === 'bestshare') { 
+                echo htmlspecialchars(format_share($value)); 
+                if ($network_difficulty !== null && $network_difficulty > 0) { 
+                    $percent = ($value / $network_difficulty) * 100; 
+                    // SVG Emote for simple view
+                    $emote = '';
+                    if ($percent < 0.1) $emote = get_svg_icon('sad');
+                    elseif ($percent < 1) $emote = get_svg_icon('thinking');
+                    elseif ($percent < 10) $emote = get_svg_icon('smile');
+                    elseif ($percent < 50) $emote = get_svg_icon('rocket');
+                    elseif ($percent < 100) $emote = get_svg_icon('fire');
+                    else { $emote = get_svg_icon('trophy'); echo '<script>startConfetti();</script>'; }
+                    echo ' <span class="full-date">(' . number_format($percent, 4) . '%) <span class="emote">'.$emote.'</span></span>'; 
+                } 
+            } 
             elseif (strpos($key, 'hashrate') === 0) { echo htmlspecialchars(format_hashrate($value)); } 
             elseif (strpos($key, 'SPS') === 0) { echo htmlspecialchars(format_number_auto((float)$value, 3)); } 
             else { 
