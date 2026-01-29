@@ -1,76 +1,75 @@
 <?php
-// --- Common Configuration ---
-$apiTimeout = 15; // Timeout for external API calls in seconds
-// --- Bitcoin Core Config ---
-$bitcoinCliUser = 'bitcoinnode'; // User running bitcoind
-$bitcoinCliPath = '/usr/local/bin/bitcoin-cli'; // Path to bitcoin-cli
+// --- Common Configuration v90 ---
+$apiTimeout = 15; 
+$bitcoinCliUser = 'bitcoinnode'; 
+$bitcoinCliPath = '/usr/local/bin/bitcoin-cli'; 
 
 // --- Common Functions ---
 
 /**
- * Executes a bitcoin-cli command as the specified user.
- * @param string $command_args Arguments to pass to bitcoin-cli (e.g., "getblockcount")
+ * Executes a bitcoin-cli command securely using argument escaping.
+ * @param array|string $command_args Array of arguments (preferred) or string (legacy).
  * @return array ['output' => string|null, 'error' => string|null]
  */
 function run_bitcoin_cli($command_args) {
     global $bitcoinCliPath, $bitcoinCliUser;
-    if (empty($bitcoinCliPath) || !is_executable($bitcoinCliPath) || empty($bitcoinCliUser)) {
-        echo "Warning: bitcoin-cli path ('{$bitcoinCliPath}') or user ('{$bitcoinCliUser}') not configured correctly or cli not executable.\n";
-        return ['output' => null, 'error' => 'bitcoin-cli not configured'];
+    
+    if (empty($bitcoinCliPath) || !is_executable($bitcoinCliPath)) {
+        return ['output' => null, 'error' => 'bitcoin-cli not found or not executable'];
     }
-    // Use sudo -u <user> and redirect stderr to stdout
-    $full_command = 'sudo -u ' . escapeshellarg($bitcoinCliUser) . ' ' . escapeshellcmd($bitcoinCliPath) . ' ' . $command_args . ' 2>&1';
+
+    // Security Hardening: Construct command parts safely
+    $cmdParts = [];
+    $cmdParts[] = 'sudo -u ' . escapeshellarg($bitcoinCliUser);
+    $cmdParts[] = escapeshellcmd($bitcoinCliPath);
+
+    // Handle arguments
+    if (is_array($command_args)) {
+        foreach ($command_args as $arg) {
+            $cmdParts[] = escapeshellarg($arg); // Securely escape every single argument
+        }
+    } else {
+        // Legacy fallback (less secure, strictly for internal hardcoded strings)
+        $cmdParts[] = $command_args; 
+    }
+
+    $full_command = implode(' ', $cmdParts) . ' 2>&1';
     $output = @shell_exec($full_command); 
 
     if ($output === null) {
-        return ['output' => null, 'error' => 'shell_exec failed or returned null'];
+        return ['output' => null, 'error' => 'shell_exec returned null'];
     }
-    $trimmed_output = trim($output);
-    // Check for common error patterns
-    if ($trimmed_output === '' || strpos(strtolower($trimmed_output), 'error code:') !== false || strpos(strtolower($trimmed_output), 'error:') !== false) {
-        return ['output' => null, 'error' => $trimmed_output ?: 'Empty output received'];
+    
+    $trimmed = trim($output);
+    // Detect RPC errors
+    if ($trimmed === '' || stripos($trimmed, 'error code:') !== false || stripos($trimmed, 'error:') !== false) {
+        return ['output' => null, 'error' => $trimmed ?: 'Empty output'];
     }
-    // Assume success
-    return ['output' => $trimmed_output, 'error' => null];
+
+    return ['output' => $trimmed, 'error' => null];
 }
 
-/**
- * Fetches data from a URL using cURL.
- * @param string $url The URL to fetch.
- * @return string|null The raw response body or null on failure.
- */
 function api_fetch($url) {
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
     curl_setopt($ch, CURLOPT_TIMEOUT, $GLOBALS['apiTimeout']);
-    curl_setopt($ch, CURLOPT_USERAGENT, 'CkpoolStatsViewer/1.2 (PHP cURL)');
+    curl_setopt($ch, CURLOPT_USERAGENT, 'CkpoolStatsViewer/v90 (HANTI Security)');
     curl_setopt($ch, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
     curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
     
-    // Add Coinbase specific header if needed
     if (strpos($url, 'coinbase.com') !== false) {
        curl_setopt($ch, CURLOPT_HTTPHEADER, array('CB-VERSION: ' . date('Y-m-d')));
     }
 
     $output = curl_exec($ch);
     $httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curl_error_num = curl_errno($ch);
-    $curl_error_msg = curl_error($ch);
     curl_close($ch);
 
-    if ($curl_error_num > 0) {
-        echo "Warning: cURL error for {$url}: [{$curl_error_num}] {$curl_error_msg}\n";
-        return null;
-    } elseif ($httpcode != 200) {
-        echo "Warning: Failed API fetch for {$url} (HTTP: {$httpcode})\n";
-        return $output; // Return raw output to see API error message
-    } elseif ($output) {
+    if ($httpcode == 200 && $output) {
         return $output;
     }
-
-    echo "Warning: API fetch for {$url} returned empty response (HTTP: {$httpcode})\n";
     return null;
 }
 ?>

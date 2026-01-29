@@ -1,13 +1,12 @@
 #!/usr/bin/php
 <?php
-// --- PARSER v80: OPTIMIZED (Lightweight for small pool.status) ---
+// --- PARSER v90: SECURE & OPTIMIZED ---
 require_once __DIR__ . '/common.php';
 
 // --- CONFIGURATION ---
 $poolStatusFile = '/var/log/ckpool/pool/pool.status'; 
 $usersDir       = '/var/log/ckpool/users/'; 
 $lastRunFile    = __DIR__ . '/data/parser_last_run.txt';
-
 $dataDir = __DIR__ . '/data';
 $statsDbPath = $dataDir . '/stats.db';
 $webUser = 'web1';
@@ -32,18 +31,23 @@ function parse_hashrate_to_ghs_local($hashrateStr) {
 
 function get_real_node_data() {
     $data = ['height' => 0, 'reward' => 0, 'price' => 0];
-    $cliCount = run_bitcoin_cli('getblockcount');
+    
+    // Secure Array Call
+    $cliCount = run_bitcoin_cli(['getblockcount']);
+    
     if ($cliCount['error'] === null && is_numeric(trim($cliCount['output']))) {
         $data['height'] = (int)trim($cliCount['output']);
-        $statsCmd = "getblockstats {$data['height']} '[\"subsidy\",\"totalfee\"]'";
-        $stats = run_bitcoin_cli($statsCmd);
+        // Secure Call with args
+        $stats = run_bitcoin_cli(['getblockstats', $data['height'], '["subsidy","totalfee"]']);
         $statsData = json_decode($stats['output'] ?? '{}', true);
+        
         if (isset($statsData['subsidy']) && isset($statsData['totalfee'])) {
             $data['reward'] = ($statsData['subsidy'] + $statsData['totalfee']) / 100000000;
         } else {
             $data['reward'] = 50 / pow(2, floor($data['height'] / 210000)); 
         }
     }
+    
     $json = api_fetch('https://api.kraken.com/0/public/Ticker?pair=XBTUSD');
     if ($json) {
         $d = json_decode($json, true);
@@ -57,7 +61,7 @@ if (!is_dir($dataDir)) { mkdir($dataDir, 0775, true); }
 try {
     $pdo = new PDO('sqlite:' . $statsDbPath);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->exec("PRAGMA journal_mode = DELETE"); // Bezpieczny tryb
+    $pdo->exec("PRAGMA journal_mode = DELETE"); 
     $pdo->exec("PRAGMA synchronous = NORMAL");
     
     $pdo->exec("CREATE TABLE IF NOT EXISTS pool_stats (id INTEGER PRIMARY KEY, last_update INTEGER, data TEXT)");
@@ -67,7 +71,12 @@ try {
     $pdo->exec("CREATE TABLE IF NOT EXISTS user_daily_history (date INTEGER, btc_address TEXT, worker_name TEXT, avg_hashrate_ghs REAL, PRIMARY KEY (date, btc_address, worker_name))");
     $pdo->exec("CREATE TABLE IF NOT EXISTS user_hourly_history (time_bucket INTEGER, btc_address TEXT, worker_name TEXT, avg_hashrate_ghs REAL, PRIMARY KEY (time_bucket, btc_address, worker_name))");
     
-    // Auto-migracja kolumn
+    // PERFORMANCE INDEXES
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_pool_hist_ts ON pool_history(timestamp)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_user_hourly_ts ON user_hourly_history(time_bucket)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_user_daily_dt ON user_daily_history(date)");
+
+    // Auto-migracja
     $colsH = $pdo->query("PRAGMA table_info(pool_history)")->fetchAll(PDO::FETCH_COLUMN, 1);
     $reqH = ['hashrate_1m_ghs','hashrate_5m_ghs','hashrate_1h_ghs','shares','users','workers','accepted','rejected'];
     foreach($reqH as $c) { if(!in_array($c, $colsH)) $pdo->exec("ALTER TABLE pool_history ADD COLUMN $c NUMERIC DEFAULT 0"); }
@@ -86,7 +95,6 @@ $poolData['last_block_reward_btc'] = $nodeData['reward'];
 $poolData['btc_usd_price'] = $nodeData['price'];
 
 if (file_exists($poolStatusFile)) {
-    // Plik jest mały (419 bajtów), czytamy normalnie
     $lines = file($poolStatusFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($lines as $line) {
         $json = json_decode($line, true);
@@ -113,7 +121,6 @@ if (file_exists($poolStatusFile)) {
     $stmt = $pdo->prepare("INSERT INTO pool_history (timestamp, hashrate_1m_ghs, hashrate_5m_ghs, hashrate_1h_ghs, shares, users, workers, accepted, rejected) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
     $stmt->execute([$now, $poolData['hashrate1m'], $poolData['hashrate5m'], $poolData['hashrate1hr'], $poolData['shares'], $poolData['Users'], $poolData['Workers'], $poolData['accepted'], $poolData['rejected']]);
     
-    // Daily History
     $today = strtotime('today midnight');
     $stmtAvg = $pdo->prepare("SELECT avg_hashrate_ghs FROM pool_daily_history WHERE date = ?");
     $stmtAvg->execute([$today]);

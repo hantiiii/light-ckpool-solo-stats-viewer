@@ -1,6 +1,6 @@
 <?php
 // --- CONFIGURATION ---
-// Wersja v84: Restored Block Height Display
+// Wersja v89: HANTI v8 "Catalyst" - Branding Consistency Fix (Tooltip Name)
 ini_set('display_errors', 0);
 error_reporting(E_ALL);
 
@@ -172,7 +172,7 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script> <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
     <script> (function() { const getTheme = () => localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); document.documentElement.setAttribute('data-theme', getTheme()); })(); </script>
     <style>
-        :root { --font-sans: 'Inter', sans-serif; --font-mono: 'JetBrains Mono', monospace; --bg: #0f1115; --card-bg: #161b22; --border: #30363d; --text-main: #f0f6fc; --text-muted: #8b949e; --accent: #238636; --danger: #da3633; }
+        :root { --font-sans: 'Inter', sans-serif; --font-mono: 'JetBrains Mono', monospace; --bg: #0f1115; --card-bg: #161b22; --border: #30363d; --text-main: #f0f6fc; --text-muted: #8b949e; --accent: #238636; --danger: #da3633; --warning: #d29922; }
         [data-theme='light'] { --bg: #f6f8fa; --card-bg: #ffffff; --border: #d0d7de; --text-main: #24292f; --text-muted: #57606a; --accent: #1a7f37; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: var(--font-sans); background: var(--bg); color: var(--text-main); line-height: 1.5; padding-bottom: 3rem; }
@@ -189,9 +189,10 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
         .brand h1 { font-size: 1.5rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem; }
         .brand span { font-family: var(--font-mono); background: var(--accent); color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; }
         .subtitle { color: var(--text-muted); font-size: 0.9rem; margin-top: 0.25rem; }
-        .hanti-box { background: linear-gradient(145deg, var(--card-bg), rgba(35, 134, 54, 0.05)); border-left: 4px solid var(--accent); }
+        .hanti-box { border-left: 4px solid var(--accent); }
         .hanti-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
-        .hanti-badge { font-family: var(--font-mono); font-size: 0.75rem; background: var(--border); padding: 2px 6px; border-radius: 4px; }
+        .hanti-badge { font-family: var(--font-mono); font-size: 0.65rem; background: rgba(210, 153, 34, 0.2); color: #e3b341; border: 1px solid rgba(210, 153, 34, 0.4); padding: 2px 6px; border-radius: 4px; white-space: nowrap; cursor: help; font-weight: bold; }
+        [data-theme='light'] .hanti-badge { color: #855f0b; border-color: rgba(133, 95, 11, 0.3); background: rgba(255, 230, 160, 0.5); }
         table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.9rem; }
         th, td { padding: 0.75rem 0; border-bottom: 1px solid var(--border); text-align: left; }
         th { color: var(--text-muted); font-weight: 500; }
@@ -215,7 +216,7 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
 <body>
 
 <header>
-    <div class="brand"><h1>srv.88x.pl <span>NODE</span></h1><div class="subtitle">Solo Mining Intelligence • H.A.N.T.I. v7 Solaris</div></div>
+    <div class="brand"><h1>srv.88x.pl <span>NODE</span></h1><div class="subtitle">Solo Mining Intelligence • H.A.N.T.I. v8 "Catalyst"</div></div>
     <button class="theme-toggle" id="theme-toggle">?</button>
 </header>
 
@@ -226,7 +227,22 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
 
     <?php if (!$btc_address && (isset($pool_data) || isset($network_data))): ?>
     <div class="card kpi-card"><div><div class="kpi-title">Network Hashrate</div><div class="kpi-value"><?= htmlspecialchars(format_hashrate($network_hashrate)) ?></div><?php if ($network_hashrate_change !== null): $class = $network_hashrate_change >= 0 ? 'text-green' : 'text-red'; $sign = $network_hashrate_change >= 0 ? '+' : ''; echo '<div class="kpi-sub '.$class.'">24h Change: '.$sign.number_format($network_hashrate_change, 2).'%</div>'; endif; ?></div><div class="kpi-sub clickable" id="network-status-header">View History Chart</div></div>
-    <div class="card kpi-card hanti-box"><div><div class="hanti-header"><div class="kpi-title">Difficulty Prediction</div><div class="hanti-badge">HANTI v7</div></div><?php if ($difficulty_prediction && isset($difficulty_prediction['prediction'])): $pred = $difficulty_prediction['prediction']; $p_class = $pred >= 0 ? 'text-green' : 'text-red'; $p_sign = $pred >= 0 ? '+' : ''; ?><div class="kpi-value <?= $p_class ?>"><?= $p_sign . number_format($pred, 2) ?>%</div><div class="kpi-sub">Progress: <?= $difficulty_prediction['progress'] ?>% <br>Est: <?= $estimated_adjustment_date ?></div><?php else: ?><div class="kpi-value">Calc...</div><?php endif; ?></div></div>
+    <?php 
+    // HANTI Card with Dynamic Background
+    $progVal = ($difficulty_prediction && isset($difficulty_prediction['progress'])) ? floatval($difficulty_prediction['progress']) : 0;
+    $progVal = max(0, min(100, $progVal));
+    $hantiStyle = "background-image: linear-gradient(90deg, rgba(35, 134, 54, 0.15) {$progVal}%, transparent {$progVal}%);";
+    
+    // Fee Pressure Calculation (v8 Feature)
+    $fee_tooltip_extra = "";
+    if ($last_block_reward_btc > 0) {
+        $base_subsidy = 3.125; // Current Era
+        $fees = max(0, $last_block_reward_btc - $base_subsidy);
+        $fee_percent = ($fees / $last_block_reward_btc) * 100;
+        $fee_tooltip_extra = " + Fee Pressure (" . number_format($fee_percent, 1) . "%)";
+    }
+    ?>
+    <div class="card kpi-card hanti-box" style="<?= $hantiStyle ?>"><div><div class="hanti-header"><div class="kpi-title">Difficulty Prediction</div><div class="hanti-badge" title="H.A.N.T.I. v8 Catalyst: ? Diff = ?(Block Time × Hashrate) × Catalyst(BTC Price<?= $fee_tooltip_extra ?>).">HANTI v8</div></div><?php if ($difficulty_prediction && isset($difficulty_prediction['prediction'])): $pred = $difficulty_prediction['prediction']; $p_class = $pred >= 0 ? 'text-green' : 'text-red'; $p_sign = $pred >= 0 ? '+' : ''; ?><div class="kpi-value <?= $p_class ?>"><?= $p_sign . number_format($pred, 2) ?>%</div><div class="kpi-sub">Progress: <?= $difficulty_prediction['progress'] ?>% <br>Est: <?= $estimated_adjustment_date ?></div><?php else: ?><div class="kpi-value">Calc...</div><?php endif; ?></div></div>
     <div class="card kpi-card"><div><div class="kpi-title">Current Difficulty</div><div class="kpi-value" style="font-size: 1.4rem;"><?= htmlspecialchars(format_number_auto($network_difficulty)) ?></div><?php if ($previous_network_difficulty): $diff_chg = (($network_difficulty - $previous_network_difficulty)/$previous_network_difficulty)*100; $d_class = $diff_chg >= 0 ? 'text-green' : 'text-red'; echo '<div class="kpi-sub '.$d_class.'">Prev: '.($diff_chg>=0?'+':'').number_format($diff_chg, 2).'%</div>'; endif; ?></div></div>
     <div class="card kpi-card"><div><div class="kpi-title">Block Reward</div><div class="kpi-value text-green">$<?= $last_block_reward_usd ? number_format($last_block_reward_usd, 0, '.', ',') : '---' ?></div><div class="kpi-sub"><?= number_format($last_block_reward_btc, 6) ?> BTC</div>
     <div class="kpi-sub" style="font-size: 0.75rem; opacity: 0.7;">Block #<?= number_format($last_fetched_block_height) ?></div>
