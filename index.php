@@ -1,6 +1,6 @@
 <?php
 // --- CONFIGURATION ---
-// Version v96: Logic Fix - Emoticons now appear in Pool Stats too
+// Version v98: UI Polish - Clean Worker Names, Dual Series Charts (1h+1d), Fixed Dates, Working Buttons
 ini_set('display_errors', 0);
 error_reporting(E_ALL);
 // FORCE UTF-8
@@ -18,7 +18,7 @@ $networkDbPath = $dataDir . '/network.db';
 $quotesFile = __DIR__ . '/quotes.json';
 
 // --- QUOTES LOGIC ---
-$random_quote = "Tick tock, next block."; // Fallback
+$random_quote = "Tick tock, next block."; 
 if (file_exists($quotesFile)) {
     $quotesData = json_decode(file_get_contents($quotesFile), true);
     if ($quotesData && is_array($quotesData)) {
@@ -28,7 +28,6 @@ if (file_exists($quotesFile)) {
 
 // --- SVG ICONS HELPER ---
 function get_svg_icon($name) {
-    // Optimized SVGs for performance
     switch($name) {
         case 'sad': return '<svg viewBox="0 0 24 24" fill="#8b949e"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm4-11a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm-8 0a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm4 9c-2.33 0-4.31-1.46-5.11-3.5h10.22c-.8 2.04-2.78 3.5-5.11 3.5z"/></svg>';
         case 'thinking': return '<svg viewBox="0 0 24 24" fill="#a371f7"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-4h2v2h-2v-2zm1.61-9.96c-2.06-.3-3.88.97-4.43 2.79-.18.58.26.96.8.96H9c.34 0 .65-.2.74-.53.18-.7.73-1.16 1.41-1.07.69.09 1.15.7 1.02 1.4-.15.82-.94 1.22-1.39 1.76-.66.8-1.03 1.5-1.03 2.65h2.5c0-.6.4-1 .85-1.46.6-.62 1.5-1.2 1.77-2.3.43-1.74-.75-3.66-2.26-4.15z"/></svg>'; 
@@ -66,25 +65,60 @@ if (isset($_GET['fetch_chart_data']) || isset($_GET['fetch_network_chart']) || i
             $stmt = $pdo_stats->prepare($query); $stmt->execute($params); $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
             $datasets['1d'] = [ 'labels' => array_column($results, 'date'), 'data' => array_column($results, 'avg_hashrate_ghs'), ];
         } else { 
+            // MAIN CHART FETCH (1h, 5m, mixed)
             if (!file_exists($statsDbPath)) throw new Exception("Stats DB unavailable");
             $pdo_stats = new PDO('sqlite:' . $statsDbPath);
             $btc_address = isset($_GET['btc_address']) ? trim(htmlspecialchars($_GET['btc_address'])) : null; 
             $worker_name = isset($_GET['worker']) ? trim(htmlspecialchars($_GET['worker'])) : null; 
             $range_days = isset($_GET['range']) ? (int)$_GET['range'] : 1; 
-            if ($range_days <= 1) { 
-                if ($btc_address) { $table = 'user_hourly_history'; $col_time = 'time_bucket'; $groupBy = "GROUP BY time_bucket"; $interval = 3600; $series_map = ['1h' => 'avg_hashrate_ghs']; } 
-                else { $table = 'pool_history'; $col_time = 'timestamp'; $groupBy = "GROUP BY time_bucket"; $interval = 300; $series_map = ['5m' => 'hashrate_5m_ghs', '1h' => 'hashrate_1h_ghs']; }
-            } elseif ($range_days <= 30) { 
-                if ($btc_address) { $table = 'user_hourly_history'; $col_time = 'time_bucket'; $interval = 3600; $series_map = ['1h' => 'avg_hashrate_ghs']; } 
-                else { $table = 'pool_history'; $col_time = 'timestamp'; $interval = 3600; $series_map = ['1h' => 'hashrate_1h_ghs']; } $groupBy = "GROUP BY time_bucket"; 
-            } else { $table = $btc_address ? 'user_daily_history' : 'pool_daily_history'; $col_time = 'date'; $groupBy = "GROUP BY time_bucket"; $interval = 86400; $series_map = ['1d' => 'avg_hashrate_ghs']; }
-            $since = time() - ($range_days * 86400); $params = [':since' => $since]; $where_clause = "WHERE $col_time > :since ";
-            if ($btc_address) { $where_clause .= "AND btc_address = :btc_address AND worker_name = :worker_name "; $params[':btc_address'] = $btc_address; $params[':worker_name'] = $worker_name ?: AGGREGATE_WORKER_NAME; }
-            try { $pdo_stats->query("SELECT 1 FROM $table LIMIT 1"); } catch (Exception $e) { throw new Exception("Table $table not ready."); }
-            $sql_selects = []; foreach ($series_map as $key => $column) { $sql_selects[] = "AVG({$column}) AS avg_{$key}"; }
-            $query = "SELECT ($col_time / $interval) * $interval AS time_bucket, " . implode(', ', $sql_selects) . " FROM {$table} {$where_clause} {$groupBy} ORDER BY time_bucket ASC";
-            $stmt = $pdo_stats->prepare($query); $stmt->execute($params); $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            foreach ($series_map as $key => $column) { $datasets[$key] = [ 'labels' => array_column($results, 'time_bucket'), 'data' => array_column($results, "avg_{$key}"), ]; } 
+            
+            // --- UPDATED LOGIC FOR 7D & 30D (Mixed Datasets: 1h + 1d) ---
+            if ($range_days == 7 || $range_days == 30) {
+                // 1. Fetch Hourly Data (High Res)
+                $since = time() - ($range_days * 86400);
+                if ($btc_address) { 
+                    $table = 'user_hourly_history'; $col_time = 'time_bucket'; 
+                    $where = "WHERE time_bucket > :since AND btc_address = :addr AND worker_name = :w"; 
+                    $params = [':since' => $since, ':addr' => $btc_address, ':w' => $worker_name ?: AGGREGATE_WORKER_NAME];
+                    $col_val = 'avg_hashrate_ghs';
+                } else { 
+                    $table = 'pool_history'; $col_time = 'timestamp'; 
+                    $where = "WHERE timestamp > :since"; 
+                    $params = [':since' => $since];
+                    $col_val = 'hashrate_1h_ghs';
+                }
+                
+                $query1h = "SELECT ($col_time / 3600) * 3600 as bucket, AVG($col_val) as val FROM $table $where GROUP BY bucket ORDER BY bucket ASC";
+                $stmt = $pdo_stats->prepare($query1h); $stmt->execute($params); $res1h = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $datasets['1h'] = [ 'labels' => array_column($res1h, 'bucket'), 'data' => array_column($res1h, 'val') ];
+
+                // 2. Fetch Daily Data (Trend)
+                if ($btc_address) {
+                    $tableD = 'user_daily_history'; $whereD = "WHERE date > :since AND btc_address = :addr AND worker_name = :w";
+                } else {
+                    $tableD = 'pool_daily_history'; $whereD = "WHERE date > :since";
+                }
+                $query1d = "SELECT date, avg_hashrate_ghs FROM $tableD $whereD ORDER BY date ASC";
+                $stmtD = $pdo_stats->prepare($query1d); $stmtD->execute($params); $res1d = $stmtD->fetchAll(PDO::FETCH_ASSOC);
+                $datasets['1d'] = [ 'labels' => array_column($res1d, 'date'), 'data' => array_column($res1d, 'avg_hashrate_ghs') ];
+
+            } else {
+                // Standard logic for 24h
+                if ($range_days <= 1) { 
+                    if ($btc_address) { $table = 'user_hourly_history'; $col_time = 'time_bucket'; $groupBy = "GROUP BY time_bucket"; $interval = 3600; $series_map = ['1h' => 'avg_hashrate_ghs']; } 
+                    else { $table = 'pool_history'; $col_time = 'timestamp'; $groupBy = "GROUP BY time_bucket"; $interval = 300; $series_map = ['5m' => 'hashrate_5m_ghs', '1h' => 'hashrate_1h_ghs']; }
+                } else { 
+                    $table = $btc_address ? 'user_daily_history' : 'pool_daily_history'; $col_time = 'date'; $groupBy = "GROUP BY time_bucket"; $interval = 86400; $series_map = ['1d' => 'avg_hashrate_ghs']; 
+                }
+                
+                $since = time() - ($range_days * 86400); $params = [':since' => $since]; $where_clause = "WHERE $col_time > :since ";
+                if ($btc_address) { $where_clause .= "AND btc_address = :btc_address AND worker_name = :worker_name "; $params[':btc_address'] = $btc_address; $params[':worker_name'] = $worker_name ?: AGGREGATE_WORKER_NAME; }
+                
+                $sql_selects = []; foreach ($series_map as $key => $column) { $sql_selects[] = "AVG({$column}) AS avg_{$key}"; }
+                $query = "SELECT ($col_time / $interval) * $interval AS time_bucket, " . implode(', ', $sql_selects) . " FROM {$table} {$where_clause} {$groupBy} ORDER BY time_bucket ASC";
+                $stmt = $pdo_stats->prepare($query); $stmt->execute($params); $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($series_map as $key => $column) { $datasets[$key] = [ 'labels' => array_column($results, 'time_bucket'), 'data' => array_column($results, "avg_{$key}"), ]; } 
+            }
         } 
     } catch (Exception $e) { $datasets = ['error' => $e->getMessage()]; } 
     echo json_encode($datasets); exit(); 
@@ -250,7 +284,11 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
         .confetti { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 9999; overflow: hidden; display: none; }
         .confetti-piece { position: absolute; width: 10px; height: 10px; background: #ffd700; top: -10px; opacity: 0; }
         
-        /* New Emote Styles for SVG */
+        /* WORKER CHART BUTTON STYLE */
+        .worker-chart-btn { background: var(--accent); color: white; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; font-weight: 600; transition: opacity 0.2s; }
+        .worker-chart-btn:hover { opacity: 0.8; }
+
+        /* Emote Styles */
         .emote { display: inline-block; vertical-align: middle; margin-left: 6px; }
         .emote svg { width: 1.2em; height: 1.2em; vertical-align: -0.25em; display: block; }
         
@@ -368,7 +406,20 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
             updateThemeIcon(newTheme);
         });
 
-        document.addEventListener('click', (e) => { if(e.target.closest('.workers-toggle')) { const row = document.getElementById('worker-list-row'); row.style.display = row.style.display === 'none' ? 'table-row' : 'none'; } });
+        // Event Delegation for worker charts
+        document.addEventListener('click', (e) => {
+            if (e.target.closest('.workers-toggle')) {
+                const row = document.getElementById('worker-list-row');
+                row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+            }
+            if (e.target.classList.contains('worker-chart-btn')) {
+                const workerName = e.target.dataset.worker;
+                document.getElementById('modal-backdrop').style.display = 'flex';
+                document.getElementById('modal-title').innerText = 'Worker Stats: ' + workerName;
+                const canvas = document.getElementById('modalChartCanvas');
+                loadChart(1, workerName, canvas, true);
+            }
+        });
 
         const mainCanvas = document.getElementById('hashrateChart');
         const btcAddress = <?= json_encode($btc_address) ?>;
@@ -386,12 +437,38 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
             const datasets = [];
             const colors = ['#238636', '#1f6feb', '#a371f7'];
             let colorIdx = 0;
-            for(const k in data) {
-                if(data[k].data) {
-                    datasets.push({ label: k, data: data[k].labels.map((t, i) => ({x: t*1000, y: data[k].data[i]})), borderColor: colors[colorIdx++], borderWidth: 2, pointRadius: 0, tension: 0.4 });
+            
+            // Check for mixed datasets (1h and 1d)
+            if (data['1h'] && data['1d']) {
+                 datasets.push({ label: 'Hourly Avg (Detailed)', data: data['1h'].labels.map((t, i) => ({x: t*1000, y: data['1h'].data[i]})), borderColor: '#238636', borderWidth: 1, pointRadius: 0, tension: 0.4 });
+                 datasets.push({ label: 'Daily Avg (Trend)', data: data['1d'].labels.map((t, i) => ({x: t*1000, y: data['1d'].data[i]})), borderColor: '#1f6feb', borderWidth: 2, pointRadius: 3, tension: 0.4 });
+            } else {
+                for(const k in data) {
+                    if(data[k].data) {
+                        datasets.push({ label: k, data: data[k].labels.map((t, i) => ({x: t*1000, y: data[k].data[i]})), borderColor: colors[colorIdx++], borderWidth: 2, pointRadius: 0, tension: 0.4 });
+                    }
                 }
             }
-            const config = { type: 'line', data: { datasets }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'time', time: { unit: range > 30 ? 'day' : 'hour' }, grid: { color: '#30363d' } }, y: { beginAtZero: true, grid: { color: '#30363d' } } } } };
+            
+            const config = { 
+                type: 'line', 
+                data: { datasets }, 
+                options: { 
+                    responsive: true, 
+                    maintainAspectRatio: false, 
+                    scales: { 
+                        x: { 
+                            type: 'time', 
+                            time: { 
+                                tooltipFormat: 'MMM dd HH:mm',
+                                displayFormats: { hour: 'MMM dd HH:mm', day: 'MMM dd' } 
+                            }, 
+                            grid: { color: '#30363d' } 
+                        }, 
+                        y: { beginAtZero: true, grid: { color: '#30363d' } } 
+                    } 
+                } 
+            };
             if(isModal) { if(window.modalChart) window.modalChart.destroy(); window.modalChart = new Chart(canvas, config); } else { if(mainChart) mainChart.destroy(); mainChart = new Chart(canvas, config); }
         }
 
@@ -420,11 +497,23 @@ function render_table($data, $key_order, $friendly_names, $network_difficulty, $
         if ($key === 'workers' && isset($data[$key]) && $data[$key] > 0) { 
             echo '<tr class="workers-toggle" id="workers-toggle" title="Click to expand/collapse"><td class="key"><span>' . ($friendly_names[$key] ?? 'Workers') . '</span> <svg class="chevron" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 6L8 10L12 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></td><td class="font-mono">' . htmlspecialchars(format_number_auto($data[$key])) . '</td></tr>'; 
             if ($workers_data) { 
-                $active_workers_html = ''; $inactive_workers_table = '<table><thead><tr><th class="key">Name</th><th>Hashrate (5 min)</th><th>Shares</th></tr></thead><tbody>'; 
+                $active_workers_html = ''; $inactive_workers_table = '<table><thead><tr><th class="key">Name</th><th>Hashrate (5 min)</th><th>Shares</th><th>Chart</th></tr></thead><tbody>'; 
                 foreach ($workers_data as $name => $stats) { 
+                    // CLEAN WORKER NAME
+                    $cleanName = $name;
+                    if (strpos($name, '.') !== false) {
+                        $parts = explode('.', $name);
+                        $cleanName = end($parts);
+                    }
+
                     $hashrate5m = $stats['hashrate5m'] ?? '0'; 
-                    if (parse_hashrate_to_ghs($hashrate5m) > 0) { $active_workers_html .= '<tr><td class="key">' . htmlspecialchars($name) . '</td><td class="font-mono">' . htmlspecialchars(format_hashrate($hashrate5m)) . '</td><td class="font-mono">' . htmlspecialchars(format_number_auto($stats['shares'] ?? 0)) . '</td><td><button class="worker-chart-btn" data-worker="' . htmlspecialchars($name) . '">Show Chart</button></td></tr>'; } 
-                    else { $inactive_workers_table .= '<tr><td class="key">' . htmlspecialchars($name) . '</td><td class="font-mono">' . htmlspecialchars(format_hashrate($hashrate5m)) . '</td><td class="font-mono">' . htmlspecialchars(format_number_auto($stats['shares'] ?? 0)) . '</td></tr>'; $has_inactive_workers = true; } 
+                    if (parse_hashrate_to_ghs($hashrate5m) > 0) { 
+                        // Active Worker Row with Styled Button and Clean Name
+                        $active_workers_html .= '<tr><td class="key">' . htmlspecialchars($cleanName) . '</td><td class="font-mono">' . htmlspecialchars(format_hashrate($hashrate5m)) . '</td><td class="font-mono">' . htmlspecialchars(format_number_auto($stats['shares'] ?? 0)) . '</td><td><button class="worker-chart-btn" data-worker="' . htmlspecialchars($cleanName) . '">Show Chart</button></td></tr>'; 
+                    } 
+                    else { 
+                        $inactive_workers_table .= '<tr><td class="key">' . htmlspecialchars($cleanName) . '</td><td class="font-mono">' . htmlspecialchars(format_hashrate($hashrate5m)) . '</td><td class="font-mono">' . htmlspecialchars(format_number_auto($stats['shares'] ?? 0)) . '</td></tr>'; $has_inactive_workers = true; 
+                    } 
                 } 
                 $inactive_workers_table .= '</tbody></table>'; 
                 echo '<tr class="worker-list-row" id="worker-list-row"><td colspan="2"><div class="worker-list-content"><div class="worker-list-header"><h3>Active Workers</h3></div><table><thead><tr><th class="key">Name</th><th>Hashrate (5 min)</th><th>Shares</th><th>Chart</th></tr></thead><tbody>' . $active_workers_html; 
@@ -463,21 +552,7 @@ function render_table($data, $key_order, $friendly_names, $network_difficulty, $
                 if ($difficulty_prediction) { echo '<div class="prediction-info">Next adjustment progress: <strong>' . ($difficulty_prediction['progress'] ?? 'N/A') . '%</strong>.<br>'; if (isset($difficulty_prediction['prediction'])) { $pred_val = $difficulty_prediction['prediction']; $pred_class = $pred_val >= 0 ? 'diff-up' : 'diff-down'; $pred_sign = $pred_val >= 0 ? '+' : ''; echo 'Estimated change: <strong class="' . $pred_class . '">' . $pred_sign . $pred_val . '%</strong>'; } if ($estimated_adjustment_date) { echo ' (Est. <strong class="font-mono">' . $estimated_adjustment_date . '</strong>)'; } echo '</div>'; } 
                 if ($analytics) { echo '<div class="probability-info">Based on your 1h hashrate:<br>Avg. time to find a block: <strong>' . format_long_time($analytics['time_to_find']) . '</strong><br>Est. probability: <strong>' . number_format($analytics['prob_month'], 6) . '%</strong>/month, <strong>' . number_format($analytics['prob_year'], 4) . '%</strong>/year.</div>'; } 
                 echo '</div>'; 
-            } elseif ($key === 'bestshare') { 
-                echo htmlspecialchars(format_share($value)); 
-                if ($network_difficulty !== null && $network_difficulty > 0) { 
-                    $percent = ($value / $network_difficulty) * 100; 
-                    // SVG Emote for simple view
-                    $emote = '';
-                    if ($percent < 0.1) $emote = get_svg_icon('sad');
-                    elseif ($percent < 1) $emote = get_svg_icon('thinking');
-                    elseif ($percent < 10) $emote = get_svg_icon('smile');
-                    elseif ($percent < 50) $emote = get_svg_icon('rocket');
-                    elseif ($percent < 100) $emote = get_svg_icon('fire');
-                    else { $emote = get_svg_icon('trophy'); echo '<script>startConfetti();</script>'; }
-                    echo ' <span class="full-date">(' . number_format($percent, 4) . '%) <span class="emote">'.$emote.'</span></span>'; 
-                } 
-            } 
+            } elseif ($key === 'bestshare') { echo htmlspecialchars(format_share($value)); if ($network_difficulty !== null && $network_difficulty > 0) { $percent = ($value / $network_difficulty) * 100; echo ' <span class="full-date">(' . number_format($percent, 4) . '%)</span>'; } } 
             elseif (strpos($key, 'hashrate') === 0) { echo htmlspecialchars(format_hashrate($value)); } 
             elseif (strpos($key, 'SPS') === 0) { echo htmlspecialchars(format_number_auto((float)$value, 3)); } 
             else { 
@@ -495,5 +570,3 @@ function render_table($data, $key_order, $friendly_names, $network_difficulty, $
     if (isset($has_inactive_workers) && $has_inactive_workers) { echo '<div id="inactive-workers-data" style="display:none;">' . $inactive_workers_table . '</div>'; } 
 }
 ?>
-</body>
-</html>
