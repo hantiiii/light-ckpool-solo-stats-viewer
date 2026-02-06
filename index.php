@@ -1,6 +1,6 @@
 <?php
 // --- CONFIGURATION ---
-// Version v98: UI Polish - Clean Worker Names, Dual Series Charts (1h+1d), Fixed Dates, Working Buttons
+// Version v101: Axis Crop Fix - Forces X-Axis to exact range, hiding the trend buffer nicely.
 ini_set('display_errors', 0);
 error_reporting(E_ALL);
 // FORCE UTF-8
@@ -65,7 +65,6 @@ if (isset($_GET['fetch_chart_data']) || isset($_GET['fetch_network_chart']) || i
             $stmt = $pdo_stats->prepare($query); $stmt->execute($params); $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
             $datasets['1d'] = [ 'labels' => array_column($results, 'date'), 'data' => array_column($results, 'avg_hashrate_ghs'), ];
         } else { 
-            // MAIN CHART FETCH (1h, 5m, mixed)
             if (!file_exists($statsDbPath)) throw new Exception("Stats DB unavailable");
             $pdo_stats = new PDO('sqlite:' . $statsDbPath);
             $btc_address = isset($_GET['btc_address']) ? trim(htmlspecialchars($_GET['btc_address'])) : null; 
@@ -76,6 +75,10 @@ if (isset($_GET['fetch_chart_data']) || isset($_GET['fetch_network_chart']) || i
             if ($range_days == 7 || $range_days == 30) {
                 // 1. Fetch Hourly Data (High Res)
                 $since = time() - ($range_days * 86400);
+                
+                // IMPORTANT: Pass the EXACT start time to frontend to clip X-Axis
+                $datasets['meta'] = ['start' => $since * 1000];
+
                 if ($btc_address) { 
                     $table = 'user_hourly_history'; $col_time = 'time_bucket'; 
                     $where = "WHERE time_bucket > :since AND btc_address = :addr AND worker_name = :w"; 
@@ -92,14 +95,20 @@ if (isset($_GET['fetch_chart_data']) || isset($_GET['fetch_network_chart']) || i
                 $stmt = $pdo_stats->prepare($query1h); $stmt->execute($params); $res1h = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 $datasets['1h'] = [ 'labels' => array_column($res1h, 'bucket'), 'data' => array_column($res1h, 'val') ];
 
-                // 2. Fetch Daily Data (Trend)
+                // 2. Fetch Daily Data (Trend) with BUFFER (48h)
+                // We fetch extra data to ensure the line starts off-screen
+                $since_daily = $since - 172800; 
+                
                 if ($btc_address) {
-                    $tableD = 'user_daily_history'; $whereD = "WHERE date > :since AND btc_address = :addr AND worker_name = :w";
+                    $tableD = 'user_daily_history'; $whereD = "WHERE date > :since_d AND btc_address = :addr AND worker_name = :w";
+                    $paramsD = [':since_d' => $since_daily, ':addr' => $btc_address, ':w' => $worker_name ?: AGGREGATE_WORKER_NAME];
                 } else {
-                    $tableD = 'pool_daily_history'; $whereD = "WHERE date > :since";
+                    $tableD = 'pool_daily_history'; $whereD = "WHERE date > :since_d";
+                    $paramsD = [':since_d' => $since_daily];
                 }
+                
                 $query1d = "SELECT date, avg_hashrate_ghs FROM $tableD $whereD ORDER BY date ASC";
-                $stmtD = $pdo_stats->prepare($query1d); $stmtD->execute($params); $res1d = $stmtD->fetchAll(PDO::FETCH_ASSOC);
+                $stmtD = $pdo_stats->prepare($query1d); $stmtD->execute($paramsD); $res1d = $stmtD->fetchAll(PDO::FETCH_ASSOC);
                 $datasets['1d'] = [ 'labels' => array_column($res1d, 'date'), 'data' => array_column($res1d, 'avg_hashrate_ghs') ];
 
             } else {
@@ -459,6 +468,8 @@ $last_block_reward_usd = null; if ($last_block_reward_btc !== null && $btc_usd_p
                     scales: { 
                         x: { 
                             type: 'time', 
+                            // FORCE X-AXIS TO EXACTLY 7/30 DAYS (Hiding the buffer)
+                            min: data.meta ? data.meta.start : undefined, 
                             time: { 
                                 tooltipFormat: 'MMM dd HH:mm',
                                 displayFormats: { hour: 'MMM dd HH:mm', day: 'MMM dd' } 
